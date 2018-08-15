@@ -1,3 +1,5 @@
+#Notes for test -- discretized orig = discretized(discretized(undiscretized))
+
 """
 Discretizers classes, to be used in lime_tabular
 """
@@ -5,8 +7,9 @@ import numpy as np
 from sklearn.utils import check_random_state
 from abc import ABCMeta, abstractmethod
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import array, col, stddev
+from pyspark.sql.functions import array, col, stddev, randn, when
 from pyspark.ml.feature import Bucketizer
+from pyspark.ml import Pipeline
 
 
 # TODO: Move this somewhere else
@@ -76,12 +79,13 @@ class BaseDiscretizer(BaseSparkMethods):
         self.mins = {}
         self.maxs = {}
         self.random_state = check_random_state(random_state)
+        self.categorical_features_names = categorical_feature_names
 
         bins = self.bins(data, labels)
         bins = [np.unique(x).tolist() for x in bins]
 
         for feature, qts in zip(self.to_discretize, bins):
-            n_bins = len(qts) - 1    # Number of borders (=#bins-1)
+            n_bins = len(qts)   # Number of borders (=#bins-1)
             boundaries = (self._calculate_column_statistic(data, feature, "min")[0],
                           self._calculate_column_statistic(data, feature, "max")[0])
 
@@ -102,9 +106,9 @@ class BaseDiscretizer(BaseSparkMethods):
 
             # Calculate the statistics for each bucket
             self.means[feature] = []
-            self.stds[feature] =[]
+            self.stds[feature] = []
             for x in range(n_bins + 1):
-                selection = discretized.filter(col(feature) == x)
+                selection = discretized.filter(col("disc_"+feature) == x)
                 if not selection.head():
                     mean = 0
                     std = 0
@@ -158,6 +162,55 @@ class BaseDiscretizer(BaseSparkMethods):
         that form each bin of the discretizer
         """
         raise NotImplementedError("Must override bins() method")
+
+    def discretize(self, data):
+        """
+        Discretizes the data.
+        :param data: pyspark.sql.DataFrame
+        :return: a pyspark.sql.DataFrame with same dimension, but discretized
+        """
+        pipe = Pipeline(stages=list(self.bucketizers.values()))
+        discretized = pipe.fit(data).transform(data)
+        disc_select = [col(c).alias(c.lstrip("disc_"))
+                       for c in discretized.columns if c.startswith("disc_")]
+        discretized = discretized.select(
+            *(disc_select + self.categorical_features_names))
+        return discretized
+
+    def undiscretize(self, data):
+        for feature in self.to_discretize:
+            means_replacement = dict([(idx, val) for idx, val
+                                      in enumerate(self.means[feature])])
+            std_replacement = dict([(idx, val) for idx, val
+                                    in enumerate(self.stds[feature])])
+            max_replacement = dict([(idx, val) for idx, val
+                                    in enumerate(self.maxs[feature])])
+            min_replacement = dict([(idx, val) for idx, val
+                                    in enumerate(self.mins[feature])])
+            # Add dummy columns to reference the means, etc. for feature buckets
+            data = data.withColumn("mean_"+feature, col(feature))\
+                .withColumn("std_"+feature, col(feature))\
+                .withColumn("max_"+feature, col(feature))\
+                .withColumn("min_"+feature, col(feature))
+            # Populate the values according to stored information
+            data = data.replace(means_replacement, subset="mean_"+feature)
+            data = data.replace(std_replacement, subset="std_"+feature)
+            data = data.replace(max_replacement, subset="max_"+feature)
+            data = data.replace(min_replacement, subset="min_"+feature)
+            data = data.withColumn(
+                    "rand_"+feature,
+                    randn(seed=self.random_state.randint(-100, 100)))\
+                .withColumn(
+                    feature,
+                    col("rand_"+feature)*col("std_"+feature)+col("mean_"+feature))
+            data = data.withColumn(
+                feature,
+                when(col(feature) > col("max_"+feature), col("max_"+feature))\
+                .when(col(feature) < col("min_"+feature), col("min_"+feature))\
+                .otherwise(col(feature)))
+            data = data.drop("rand_"+feature, "min_"+feature, "max_"+feature,
+                             "std_"+feature, "mean_"+feature)
+        return data
 
 
 class QuartileDiscretizer(BaseDiscretizer):
