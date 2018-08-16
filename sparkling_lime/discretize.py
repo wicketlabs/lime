@@ -205,7 +205,9 @@ class BaseDiscretizer(BaseSparkMethods):
                     col("rand_"+feature)*col("std_"+feature)+col("mean_"+feature))
             data = data.withColumn(
                 feature,
-                when(col(feature) > col("max_"+feature), col("max_"+feature))\
+                # Bucketizer is from [x, y)
+                when(col(feature) >= col("max_"+feature),
+                     col("max_"+feature)-.000000001)\
                 .when(col(feature) < col("min_"+feature), col("min_"+feature))\
                 .otherwise(col(feature)))
             data = data.drop("rand_"+feature, "min_"+feature, "max_"+feature,
@@ -264,7 +266,7 @@ class DecileDiscretizer(BaseDiscretizer):
                         approx_percentile({fname}, 0.60) as p60,
                         approx_percentile({fname}, 0.70) as p70,
                         approx_percentile({fname}, 0.80) as p80,
-                        approx_percentile({fname}, 0.90) as p90,
+                        approx_percentile({fname}, 0.90) as p90
                     from
                         data
                     """
