@@ -4,9 +4,8 @@ from sparkling_lime.discretize import QuartileDiscretizer, DecileDiscretizer
 from pyspark import SparkContext, SparkConf
 from pyspark.sql import SparkSession
 import pandas as pd
-from pyspark.ml.feature import VectorAssembler
-from collections import Counter
-from numpy.testing import assert_almost_equal
+import logging
+from numpy.testing import assert_allclose
 
 
 class TestDiscretize(TestCase):
@@ -24,24 +23,24 @@ class TestDiscretize(TestCase):
         cls.sc.stop()
 
     @classmethod
-    def _make_data(cls, arr=False):
+    def _make_data(cls, n_rows=50, arr=False):
         """
         Helper function for generating pyspark dataframes for tests.
         """
         np.random.seed(42)
-        y = np.random.binomial(1, 0.5, 100)
-        X = np.zeros((100, 5))
-        z = y - np.random.binomial(1, 0.1, 100) \
-            + np.random.binomial(1,  0.1, 100)
+        y = np.random.binomial(1, 0.5, n_rows)
+        X = np.zeros((n_rows, 5))
+        z = y - np.random.binomial(1, 0.1, n_rows) \
+            + np.random.binomial(1,  0.1, n_rows)
         z[z == -1] = 0
         z[z == 2] = 1
         # 5 relevant features
         X[:, 0] = z
         X[:, 1] = y * np.abs(
-            np.random.normal(4, 1.2, 100)) + np.random.normal(4, 0.1, 100)
-        X[:, 2] = y + np.random.normal(7.2, 2.8, 100)
-        X[:, 3] = y ** 2 + np.random.normal(3.9, 1.4, 100)
-        X[:, 4] = np.sqrt(y) + np.random.binomial(2, 0.1, 100)
+            np.random.normal(4, 1.2, n_rows)) + np.random.normal(4, 0.1, n_rows)
+        X[:, 2] = y + np.random.normal(7.2, 2.8, n_rows)
+        X[:, 3] = y ** 2 + np.random.normal(3.9, 1.4, n_rows)
+        X[:, 4] = np.sqrt(y) + np.random.binomial(2, 0.1, n_rows)
 
         if arr:
             return X
@@ -67,7 +66,21 @@ class TestDiscretize(TestCase):
             qd = QuartileDiscretizer(self.df, ["f0"], columns)
             approx_bins = qd.bins(self.df, None)
             for bins in zip(exact_bins, approx_bins):
-                assert_almost_equal(bins[0], bins[1], 1)
+                assert_allclose(bins[0], bins[1], atol=0.5, err_msg=
+                                    "Bin values are not close to the exact "
+                                    "values.")
+        with self.subTest("Decile Bins are approximately correct"):
+            exact_bins = []
+            for feature in range(1, num_bins):     # First is categorical
+                qts = np.array(np.percentile(data_arr[:, feature],
+                                             list(range(10, 100, 10))))
+                exact_bins.append(qts.tolist())
+            dd = DecileDiscretizer(self.df, ["f0"], columns)
+            approx_bins = dd.bins(self.df, None)
+            for bins in zip(exact_bins, approx_bins):
+                assert_allclose(bins[0], bins[1], atol=0.5, err_msg=
+                                    "Bin values are not close to the exact "
+                                    "values.")
 
     def test_discretizer_consistency(self):
         """
