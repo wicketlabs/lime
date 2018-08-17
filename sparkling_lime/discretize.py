@@ -8,6 +8,7 @@ from sklearn.utils import check_random_state
 from abc import ABCMeta, abstractmethod
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import array, col, stddev, randn, when
+from pyspark.sql import DataFrameStatFunctions as stats
 from pyspark.ml.feature import Bucketizer
 from pyspark.ml import Pipeline
 
@@ -223,23 +224,8 @@ class QuartileDiscretizer(BaseDiscretizer):
                                  random_state=random_state)
 
     def bins(self, data, labels):
-        bins = []
-        data.registerTempTable("data")
-        for feature in self.to_discretize:
-            qts = self.spark.sql(
-                    """
-                    select
-                        approx_percentile({fname}, 0.25) as p25,
-                        approx_percentile({fname}, 0.50) as p50,
-                        approx_percentile({fname}, 0.75) as p75
-                    from
-                        data
-                    """
-                    .format(fname=feature))\
-                .withColumn("percentiles", array("p25", "p50", "p75"))\
-                .collect()[0]["percentiles"]
-            bins.append(qts)
-        self.spark.catalog.dropTempView("data")
+        bins = stats(data)\
+            .approxQuantile(self.to_discretize, [0.25, 0.50, 0.75], 0.001)
         return bins
 
 
@@ -251,28 +237,7 @@ class DecileDiscretizer(BaseDiscretizer):
                                  random_state=random_state)
 
     def bins(self, data, labels):
-        bins = []
-        data.registerTempTable("data")
-        percentiles = ["p{}".format(p) for p in range(10, 100, 10)]
-        for feature in self.to_discretize:
-            qts = self.spark.sql(
-                    """
-                    select
-                        approx_percentile({fname}, 0.10) as p10,
-                        approx_percentile({fname}, 0.20) as p20,
-                        approx_percentile({fname}, 0.30) as p30,
-                        approx_percentile({fname}, 0.40) as p40,
-                        approx_percentile({fname}, 0.50) as p50,
-                        approx_percentile({fname}, 0.60) as p60,
-                        approx_percentile({fname}, 0.70) as p70,
-                        approx_percentile({fname}, 0.80) as p80,
-                        approx_percentile({fname}, 0.90) as p90
-                    from
-                        data
-                    """
-                    .format(fname=feature))\
-                .withColumn("percentiles", array(*percentiles))\
-                .collect()[0]["percentiles"]
-            bins.append(qts)
-        self.spark.catalog.dropTempView("data")
+        percentiles = [p/100.0 for p in range(10, 100, 10)]
+        bins = stats(data)\
+            .approxQuantile(self.to_discretize, percentiles, 0.001)
         return bins
