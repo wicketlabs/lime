@@ -13,7 +13,7 @@ from pyspark import keyword_only
 
 
 class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
-                                DefaultParamsWritable):
+                       DefaultParamsWritable):
 
     validMetrics = ["euclidean"]
 
@@ -75,7 +75,7 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
 
 
 class KernelWeight(HasInputCol, HasOutputCol, Transformer,
-                     DefaultParamsReadable, DefaultParamsWritable):
+                   DefaultParamsReadable, DefaultParamsWritable):
     """
     Transforms a column of distances into a column of proximity values.
     """
