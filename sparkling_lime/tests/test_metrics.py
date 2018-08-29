@@ -67,3 +67,43 @@ class TestMetrics(TestCase):
             with self.subTest(
                     "Distances are calculated correctly: i={}".format(r["id"])):
                 self.assertAlmostEqual(r["output"], expected[r["id"]])
+
+    def test_kernel_weight(self):
+        data = [[0, 0.0], [1, 2.0], [2, 2.0], [3, 2.8284271247461903]]
+        df = self.spark.createDataFrame(data, ["id", "distances"])
+        with self.subTest("Test default parameters exist"):
+            k0 = metrics.KernelWeight()
+            self.assertCountEqual(
+                k0.params, [k0.inputCol, k0.outputCol, k0.kernelWidth])
+            self.assertTrue(all([~k0.isSet(p) for p in k0.params]))
+            self.assertFalse(k0.hasDefault(k0.kernelWidth))
+
+        with self.subTest("Test parameters are set"):
+            k0.setParams(inputCol="input", outputCol="output", kernelWidth=1.5)
+            self.assertTrue(all([k0.isSet(p) for p in k0.params]))
+            self.assertEqual(k0.getKernelWidth(), 1.5)
+            self.assertEqual(k0.getInputCol(), "input")
+            self.assertEqual(k0.getOutputCol(), "output")
+
+        with self.subTest("Test parameters are copied properly"):
+            k0c = k0.copy({k0.kernelWidth: 2.5})
+            self.assertEqual(k0c.uid, k0.uid)
+            self.assertCountEqual(k0c.params, k0.params)
+            self.assertEqual(k0c.getKernelWidth(), 2.5)
+
+        with self.subTest("New instances are populated correctly and are "
+                          "distinct"):
+            width = 1.0606601717798214
+            k1 = metrics.KernelWeight(
+                kernelWidth=width, inputCol="distances", outputCol="output")
+            self.assertNotEqual(k1.uid, k0.uid)
+            self.assertEqual(k1.getKernelWidth(), width)
+            self.assertEqual(k1.getInputCol(), "distances")
+            self.assertEqual(k1.getOutputCol(), "output")
+
+        actual = k1.transform(df).select("id", "output").collect()
+        expected = {0: 1.0, 1: 0.16901332, 2: 0.16901332, 3: 0.0285655}
+        for r in actual:
+            with self.subTest(
+                    "Distances are calculated correctly: i={}".format(r["id"])):
+                self.assertAlmostEqual(r["output"], expected[r["id"]])
