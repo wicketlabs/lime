@@ -1,50 +1,14 @@
-#Notes for test -- discretized orig = discretized(discretized(undiscretized))
-
 """
 Discretizers classes, to be used in lime_tabular
 """
 import numpy as np
 from sklearn.utils import check_random_state
 from abc import ABCMeta, abstractmethod
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import array, col, stddev, randn, when
+from pyspark.sql.functions import col, stddev, randn, when
 from pyspark.sql import DataFrameStatFunctions as stats
 from pyspark.ml.feature import Bucketizer
 from pyspark.ml import Pipeline
-
-
-# TODO: Move this somewhere else
-class BaseSparkMethods(object):
-    """
-    Stores information about the underlying SparkContext and SparkSession.
-    Mixin for Sparkling Lime methods.
-    """
-
-    def __init__(self):
-        self._sparkSession = None
-
-    @property
-    def spark(self):
-        """
-        Shortcut to use more familiar `spark` syntax instead of `sparkSession`.
-        """
-        return self.sparkSession
-
-    @property
-    def sparkSession(self):
-        """
-        Returns the user-specified Spark Session or the default.
-        """
-        if self._sparkSession is None:
-            self._sparkSession = SparkSession.builder.getOrCreate()
-        return self._sparkSession
-
-    @property
-    def sc(self):
-        """
-        Returns the underlying `SparkContext`.
-        """
-        return self.sparkSession.sparkContext
+from sparkling_lime.sparkling_lime_base import BaseSparkMethods
 
 
 class BaseDiscretizer(BaseSparkMethods):
@@ -60,14 +24,12 @@ class BaseDiscretizer(BaseSparkMethods):
     def __init__(self, data, categorical_feature_names, feature_names,
                  labels=None, random_state=None):
         """Initializer
-        Args:
-            data: numpy 2d array
-            categorical_features: list of names (str) corresponding to the
-                categorical columns. These features will not be discretized.
-                Everything else will be considered continuous, and will be
-                discretized.
-            feature_names: list of names (strings) corresponding to the columns
-                in the training data.
+        :param data: pyspark.sql.DataFrame of unassembled features
+        :param categorical_features: list of names (str) corresponding to the
+        categorical columns. These features will not be discretized.
+        Everything else will be considered continuous, and will be discretized.
+        :param feature_names: list of names (strings) corresponding to the
+        columns in the training data.
         """
         # Need this to be a list of feature names instead
         super().__init__()
