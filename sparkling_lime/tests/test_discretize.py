@@ -4,7 +4,6 @@ from sparkling_lime.discretize import QuartileDiscretizer, DecileDiscretizer
 from pyspark import SparkContext, SparkConf
 from pyspark.sql import SparkSession
 import pandas as pd
-import logging
 from numpy.testing import assert_allclose
 
 
