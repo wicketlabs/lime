@@ -1,7 +1,7 @@
 """
 Stores methods for calculating metrics
 """
-from pyspark.sql.functions import col, udf, sqrt, exp, pow
+from pyspark.sql.functions import col, sqrt, exp, pow
 from pyspark.sql.types import DoubleType
 from scipy.spatial import distance
 from pyspark.ml import Transformer, UnaryTransformer
@@ -12,23 +12,34 @@ from pyspark.ml.param import Param, Params, TypeConverters
 from pyspark import keyword_only
 
 
-class PairwiseEuclideanDistance(UnaryTransformer, DefaultParamsReadable,
+class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
                                 DefaultParamsWritable):
+
+    validMetrics = ["euclidean"]
 
     rowVector = Param(Params._dummy(), "rowVector",
                       "The denseVector of features by which the values of the"
                       " dataset are compared to calculate pairwise distances.",
                       typeConverter=TypeConverters.toVector)
 
+    metric = Param(Params._dummy(), "metric",
+                   ("The distance metric. Supported metrics include: {}"
+                    .format(",".join(validMetrics))),
+                   typeConverter=TypeConverters.toString)
+
+    _distance_fns = {"euclidean": distance.euclidean}
+
     @keyword_only
-    def __init__(self, rowVector=None, inputCol=None, outputCol=None):
-        super(PairwiseEuclideanDistance, self).__init__()
+    def __init__(self, rowVector=None, inputCol=None, outputCol=None,
+                 metric="euclidean"):
+        super(PairwiseDistance, self).__init__()
+        self._setDefault(metric="euclidean")
         kwargs = self._input_kwargs
         self.setParams(**kwargs)
 
     @keyword_only
     def setParams(self, rowVector=None, inputCol="features",
-                  outputCol="distances"):
+                  outputCol="distances", metric="euclidean"):
         """
         setParams(self, rowVector=None, inputCol=None, outputCol=None)
         Sets params for this PairwiseEuclideanDistance.
@@ -42,6 +53,12 @@ class PairwiseEuclideanDistance(UnaryTransformer, DefaultParamsReadable,
     def setRowVector(self, rowVector):
         self._set(rowVector=rowVector)
 
+    def getMetric(self):
+        return self.getOrDefault(self.metric)
+
+    def setMetric(self, metric):
+        self._set(metric=metric)
+
     def validateInputType(self, inputType):
         if inputType != VectorUDT():
             raise TypeError("Bad input type: {}. ".format(inputType) +
@@ -52,7 +69,9 @@ class PairwiseEuclideanDistance(UnaryTransformer, DefaultParamsReadable,
 
     def createTransformFunc(self):
         rowVector = self.getRowVector()
-        return lambda x: distance.euclidean(x, rowVector)
+        metric = self.getMetric()
+        distance_fn = self._distance_fns[metric]
+        return lambda x: distance_fn(x, rowVector)
 
 
 class KernelWeight(HasInputCol, HasOutputCol, Transformer,
@@ -93,4 +112,3 @@ class KernelWeight(HasInputCol, HasOutputCol, Transformer,
         return dataset.withColumn(
             outputCol,
             sqrt(exp(-(pow(col(inputCol), 2)) / kernelWidth ** 2)))
-
