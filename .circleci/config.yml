@@ -45,11 +45,9 @@ jobs:
           name: run job-type tests
           command: |
             . venv/bin/activate
+            export PYTHONPATH=$PYTHONPATH:sparkling_lime:.
             mkdir test-reports
-            export PYTHONPATH=lime:lime/sparkling_lime:.
-            TEST_COMMAND=$(python -m unittest discover ./sparkling_lime/test)
-            echo $TEST_COMMAND
-            pytest --junitxml=test-reports/results.xml $TEST_COMMAND
+            python -m unittest discover -s ./sparkling_lime/test
       - store_test_results:
           path: test-reports
       - store_artifacts:
