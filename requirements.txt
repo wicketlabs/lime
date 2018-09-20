@@ -1,0 +1,7 @@
+--index-url https://pypi.python.org/simple/
+
+pyspark>=2.3.0
+numpy
+scikit-learn
+pytest
+pandas
