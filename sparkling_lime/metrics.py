@@ -6,21 +6,70 @@ from pyspark.sql.types import DoubleType
 from scipy.spatial import distance
 from pyspark.ml import Transformer, UnaryTransformer
 from pyspark.ml.util import DefaultParamsReadable, DefaultParamsWritable
-from pyspark.ml.param.shared import HasInputCol, HasOutputCol
+from pyspark.ml.param.shared import HasInputCols, HasInputCol, HasOutputCol, HasSeed
 from pyspark.ml.linalg import VectorUDT
 from pyspark.ml.param import Param, Params, TypeConverters
 from pyspark import keyword_only
 
 
-class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
-                       DefaultParamsWritable):
+class HasDistanceMetric(Params):
+    """
+    Mixin for param distanceMetric: pairwise distance metric
+    """
+    validDistanceMetrics = ["euclidean"]
+    distanceMetric = Param(Params._dummy(), "distanceMetric",
+                   ("The distance metric. Supported distanceMetrics include: {}"
+                    .format(",".join(validDistanceMetrics))),
+                   typeConverter=TypeConverters.toString)
+    _distance_fns = {"euclidean": distance.euclidean}
+
+    def __init__(self):
+        super(HasDistanceMetric, self).__init__()
+        self._setDefault(distanceMetric="euclidean")
+
+    def setDistanceMetric(self, value):
+        """
+        Sets the value of :py:attr:`distanceMetric`.
+        """
+        self._set(distanceMetric=value)
+
+    def getDistanceMetric(self):
+        """
+        Gets the value of distanceMetric or its default value.
+        """
+        return self.getOrDefault(self.distanceMetric)
+
+
+class HasKernelWidth(Params):
+    """
+    Mixin for param kernelWidth: kernel width
+    """
+    kernelWidth = Param(Params._dummy(), "kernelWidth",
+                        "Kernel width to use in the kernel function.",
+                        typeConverter=TypeConverters.toFloat)
+
+    def __init__(self):
+        super(HasKernelWidth, self).__init__()
+
+    def setKernelWidth(self, value):
+        """
+        Sets the value of :py:attr:`kernelWidth`
+        """
+        return self._set(kernelWidth=value)
+
+    def getKernelWidth(self):
+        """
+        Get the value of kernelWidth or its default value.
+        """
+        return self.getOrDefault(self.kernelWidth)
+
+
+class PairwiseDistance(HasDistanceMetric, UnaryTransformer,
+                       DefaultParamsReadable, DefaultParamsWritable):
     """
     Calculates pairwise distances between a feature column and a provided
      vector of features, and outputs the distances to a column.
     """
-
-    validMetrics = ["euclidean"]
-
     rowVector = Param(Params._dummy(), "rowVector",
                       "The denseVector of features by which the values of the"
                       " dataset are compared to calculate pairwise distances."
@@ -29,16 +78,9 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
                       " the distance from second to first.",
                       typeConverter=TypeConverters.toVector)
 
-    metric = Param(Params._dummy(), "metric",
-                   ("The distance metric. Supported metrics include: {}"
-                    .format(",".join(validMetrics))),
-                   typeConverter=TypeConverters.toString)
-
-    _distance_fns = {"euclidean": distance.euclidean}
-
     @keyword_only
     def __init__(self, rowVector=None, inputCol=None, outputCol=None,
-                 metric="euclidean"):
+                 distanceMetric="euclidean"):
         super(PairwiseDistance, self).__init__()
         self._setDefault(metric="euclidean", rowVector=None)
         kwargs = self._input_kwargs
@@ -46,7 +88,7 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
 
     @keyword_only
     def setParams(self, rowVector=None, inputCol="features",
-                  outputCol="distances", metric="euclidean"):
+                  outputCol="distances", distanceMetric="euclidean"):
         """
         Sets params for this PairwiseEuclideanDistance transformer.
         """
@@ -64,18 +106,6 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
         Sets the value for 'rowVector' param.
         """
         self._set(rowVector=rowVector)
-
-    def getMetric(self):
-        """
-        Gets the value for 'metric' param, or the default.
-        """
-        return self.getOrDefault(self.metric)
-
-    def setMetric(self, metric):
-        """
-        Sets the value for 'metric' param.
-        """
-        self._set(metric=metric)
 
     def validateInputType(self, inputType):
         """
@@ -116,7 +146,7 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
         rows of features based on the given distance metric.
         """
         rowVector = self.getRowVector()
-        metric = self.getMetric()
+        metric = self.getDistanceMetric()
         distance_fn = self._distance_fns[metric]
         if rowVector:
             return lambda x: distance_fn(x, rowVector)
@@ -124,14 +154,11 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
             return lambda x: distance_fn(x[1], x[0])
 
 
-class KernelWeight(HasInputCol, HasOutputCol, Transformer,
+class KernelWeight(HasKernelWidth, HasInputCol, HasOutputCol, Transformer,
                    DefaultParamsReadable, DefaultParamsWritable):
     """
     Transforms a column of distances into a column of proximity values.
     """
-    kernelWidth = Param(Params._dummy(), "kernelWidth",
-                        "Kernel width to use in the kernel function.",
-                        typeConverter=TypeConverters.toFloat)
 
     @keyword_only
     def __init__(self, kernelWidth=None, inputCol=None, outputCol=None):
@@ -148,18 +175,6 @@ class KernelWeight(HasInputCol, HasOutputCol, Transformer,
         kwargs = self._input_kwargs
         return self._set(**kwargs)
 
-    def getKernelWidth(self):
-        """
-        Get the value for 'kernelWidth' param, or the default.
-        """
-        return self.getOrDefault(self.kernelWidth)
-
-    def setRowVector(self, kernelWidth):
-        """
-        Set the value for 'rowVector' param.
-        """
-        self._set(kernelWidth=kernelWidth)
-
     def _transform(self, dataset):
         """
         Transforms the input dataset.
@@ -174,3 +189,5 @@ class KernelWeight(HasInputCol, HasOutputCol, Transformer,
         return dataset.withColumn(
             outputCol,
             sqrt(exp(-(pow(col(inputCol), 2)) / kernelWidth ** 2)))
+
+
