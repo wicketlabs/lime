@@ -171,8 +171,10 @@ class KernelWeight(HasKernelWidth, HasInputCol, HasOutputCol, Transformer,
             sqrt(exp(-(pow(col(inputCol), 2)) / kernelWidth ** 2)))
 
 
-class NeighborhoodGenerator(HasInputCols, HasOutputCol, HasSeed, Transformer,
-                            DefaultParamsWritable, DefaultParamsReadable):
+class NeighborhoodGeneratorParams(Params):
+    """
+    Private mixin class for tracking params for NeighborhoodGenerator
+    """
     neighborhoodSize = Param(Params._dummy(), "neighborhoodSize",
                              ("The size of the neighborhood to generate; the  "
                               "number of perturbed samples to generate."),
@@ -181,7 +183,7 @@ class NeighborhoodGenerator(HasInputCols, HasOutputCol, HasSeed, Transformer,
                         ("A fitted QuartileDiscretizer or DecileDiscretizer "
                          "(optional)"))
     format = Param(Params._dummy(), "format",
-                   ("The format to use ('wide'/'narrow'. If 'narrow', the "
+                   ("The format to use ('wide'/'narrow'). If 'narrow', the "
                     "neighborhood will be output as a single 2darray column "
                     "`outputCol` of size [neighborhoodSize][i], where `i` is "
                     "the number of columns in the `inputCols` list. If "
@@ -195,6 +197,63 @@ class NeighborhoodGenerator(HasInputCols, HasOutputCol, HasSeed, Transformer,
                                   " the normal is centered on the mean of the"
                                   " feature data."),
                                  typeConverter=TypeConverters.toBoolean)
+
+    @keyword_only
+    def __init__(self):
+        super(NeighborhoodGeneratorParams, self).__init__()
+
+    def setNeighborhoodSize(self, value):
+        """
+        Sets the value of :py:attr:neighborhoodSize
+        """
+        return self._set(neighborhoodSize=value)
+
+    def getNeighborhoodSize(self):
+        """
+        Returns the value of neighborhoodSize or the default value.
+        """
+        return self.getOrDefault(self.neighborhoodSize)
+
+    def setDiscretizer(self, value):
+        """
+        Sets the value of :py:attr:discretizer
+        """
+        return self._set(discretizer=value)
+
+    def getDiscretizer(self):
+        """
+        Returns the value of discretizer or the default value.
+        """
+        return self.getOrDefault(self.discretizer)
+
+    def setFormat(self, value):
+        """
+        Sets the value of :py:attr:format
+        """
+        return self._set(format=value)
+
+    def getFormat(self):
+        """
+        Returns the value of format or the default value.
+        """
+        return self.getOrDefault(self.format)
+
+    def setSampleAroundInstance(self, value):
+        """
+        Sets the value of :py:attr:sampleAroundInstance
+        """
+        return self._set(sampleAroundInstance=value)
+
+    def getSampleAroundInstance(self):
+        """
+        Returns the value of sampleAroundInstance or the default value.
+        """
+        return self.getOrDefault(self.sampleAroundInstance)
+
+
+class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
+                            HasOutputCol, HasSeed, Transformer,
+                            DefaultParamsWritable, DefaultParamsReadable):
 
     @keyword_only
     def __init__(self, inputCols=None, outputCol=None, neighborhoodSize=5000,
@@ -213,54 +272,6 @@ class NeighborhoodGenerator(HasInputCols, HasOutputCol, HasSeed, Transformer,
         """
         kwargs = self._input_kwargs
         return self._set(**kwargs)
-
-    def setNeighborhoodSize(self, value):
-        """
-        Sets the value of :py:attr:neighborhoodSize
-        """
-        return self._set(neighborhoodSize=value)
-
-    def getNeighborhoodSize(self):
-        """
-        Returns the value of neighborhoodSize or the default value.
-        """
-        return self._getOrDefault(self.neighborhoodSize)
-
-    def setDiscretizer(self, value):
-        """
-        Sets the value of :py:attr:discretizer
-        """
-        return self._set(discretizer=value)
-
-    def getDiscretizer(self):
-        """
-        Returns the value of discretizer or the default value.
-        """
-        return self._getOrDefault(self.discretizer)
-
-    def setFormat(self, value):
-        """
-        Sets the value of :py:attr:format
-        """
-        return self._set(format=value)
-
-    def getFormat(self):
-        """
-        Returns the value of format or the default value.
-        """
-        return self._getOrDefault(self.format)
-
-    def setSampleAroundInstance(self, value):
-        """
-        Sets the value of :py:attr:sampleAroundInstance
-        """
-        return self._set(sampleAroundInstance=value)
-
-    def getSampleAroundInstance(self):
-        """
-        Returns the value of sampleAroundInstance or the default value.
-        """
-        return self._getOrDefault(self.sampleAroundInstance)
 
     @staticmethod
     def _make_zeroes(x, y, format):
