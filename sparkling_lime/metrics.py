@@ -349,8 +349,8 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         :return: dataset with output_col with an array of num_samples structs
         of value choice + binary class (is same/diff)
         """
-        binary_output_col = "binary_" + input_col
-        inverse_output_col = "inverse_" + input_col
+        binary_output_col = "binary"
+        inverse_output_col = "inverse"
 
         random_state = np.random.RandomState(seed=seed)
         ordered_rates = [(k, v) for k, v in feature_rate_dict.items()]    # For safe iteration
@@ -361,19 +361,19 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         dataset = dataset.withColumn(
                 inverse_output_col,
                 F.array(
-                    [lit(random_state.choice(
+                    [lit(float(random_state.choice(
                         [r[0] for r in ordered_rates],
                         size=1,
                         replace=True,
-                        p=[r[1] for r in ordered_rates])[0])
-                     for i in num_samples]
+                        p=[r[1] for r in ordered_rates])[0]))
+                     for i in range(num_samples)]
                 ))
         # Hard to iterate over array to make binarized column, so explode instead
         dataset = dataset.withColumn(inverse_output_col,
                                      F.explode(inverse_output_col))
         dataset = dataset.withColumn(
             binary_output_col,
-            F.when(col(inverse_output_col == col(input_col)), 1).otherwise(0))
+            F.when(col(inverse_output_col) == col(input_col), 1).otherwise(0))
         dataset = dataset.withColumn(
              output_col,
              F.struct(inverse_output_col, binary_output_col))
@@ -384,7 +384,7 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         return dataset
 
     @staticmethod
-    def _make_normals(x, y, format, scale, mean=(), cols=None, seed=None):
+    def _make_normals(x, y, scale, mean=(), cols=None, seed=None):
         """
         Make a column of 2darray of zeros[x][y]
         :param x: number of rows
@@ -405,37 +405,25 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         else:
             center = cols
 
-        # Generate [x]*[y] samples of normal distribution, scale each value by
-        #   scaling factor and then add the center value
+        # For `y` columns, generate `x` samples of normal distribution, scale
+        #   each value by scaling factor and then add the center value.
         # For example, let `n` be a random sample from normal distribution,
         #   `s` be the scaling factor for a feature, and `m` the mean for the
         #    feature:
-        #       return (n*s) + m, for all s in scale and m in mean.
-        # So if x=2 and y=2:
-        #    return [[n1*s1 + m1, n2*s2 + m2], [n1`*s1 + m1, n2`*s2 + m2]]
-        if format == "narrow":
-            return F.array(
-                *[F.array(
-                    [randn * scaler + val
-                     for randn, scaler, val
-                     in zip(
-                         [F.randn(seed=seed) for i in range(y)], scale, center)
-                     ])
-                  for i in range(x)])
-        # Similar to above, but instead of nested 2darray, what would be the
-        # nesting structure is distributed over columns
-        # If use above example, x=2 & y=2,
-        #    return two columns: [n1*s1 + m1, n2*s2+m2]
-        #                      & [n1`*s1 + m1, n2`*s2 + m1]
-        elif format == "wide":
+        #       return (n*s) + m
+        # If x=3 & y=2,
+        #    return two columns: [n1*s1 + m1, n2*s1+m1, n3*s1*m1]
+        #                      & [n1`*s2 + m2, n2`*s2 + m2, n3`*s2+m2]
             return [F.array(
                         [randn * scaler + val
                             for randn, scaler, val
                             in zip(
-                                [F.randn(seed=seed) for i in range(x)], scale, center)
+                                [F.randn(seed=seed) for i in range(x)],
+                                [scale[col_idx]]*x,
+                                [center[col_idx]]*x)
                          ]
                     )
-                    for i in range(y)]
+                    for col_idx in range(y)]
 
     def _get_scale_statistics(self, dataset):
         """
@@ -516,8 +504,7 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
                 cols = None
             wide_cols = self._make_normals(num_samples, num_feats,
                                            scale=scales, mean=means,
-                                           cols=cols, format="wide",
-                                           seed=seed)
+                                           cols=cols, seed=seed)
             # Duplicate them to be the base for binary and inverse outputs
             wide_cols_named = [c.alias(i) for c, i
                                in zip(wide_cols, inverse_output_cols)] + \
