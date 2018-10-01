@@ -303,18 +303,6 @@ class NeighborhoodGeneratorParams(Params):
         """
         return self.getOrDefault(self.categoricalCols)
 
-    def setBinaryOutputCols(self, value):
-        """
-        Sets the value of :py:attr:binaryOutputCols
-        """
-        return self._set(binaryOutputCols=value)
-
-    def getBinaryOutputCols(self):
-        """
-        Returns the value of binaryOutputCols or the default value.
-        """
-        return self.getOrDefault(self.binaryOutputCols)
-
     def setInverseOutputCols(self, value):
         """
         Sets the value of :py:attr:inverseOutputCols
@@ -349,18 +337,6 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         """
         kwargs = self._input_kwargs
         return self._set(**kwargs)
-
-    @staticmethod
-    def _make_zeroes(x, y):
-        """
-        Make `y` columns of array of zeroes of size `x`
-        :param x: number of rows
-        :param y: number of columns
-        :return: `pyspark.sql.Column` of 2darray of zeros, in 1 column if
-            "narrow" format, and in `y` columns in "wide" format (named
-            numerically from [0,`y`-1])
-        """
-        return [F.array([lit(0)] * x)] * y
 
     @staticmethod
     def _make_random_choices_and_binarize(dataset, input_col, num_samples,
@@ -519,19 +495,27 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         return df
 
     def _transform(self, dataset):
+        """
+        Output schema:
+            original dataset + for each feature column:
+
+        root
+         |-- inverse_<featureName>: array (nullable = true)
+         |    |-- element: struct (containsNull = true)
+         |    |    |-- inverse: double (nullable = false)
+         |    |    |-- binary: double (nullable = false)
+
+        :param dataset:
+        :return:
+        """
         # Configure column names and save a map of inputs => outputs
         ic = self.getOrDefault(self.inputCols)
         if self.isSet(self.inverseOutputCols):
             inverse_output_cols = self.getOrDefault(self.inverseOutputCols)
         else:
             inverse_output_cols = ["inverse_" + c for c in ic]
-        if self.isSet(self.binaryOutputCols):
-            binary_output_cols = self.getOrDefault(self.binaryOutputCols)
-        else:
-            binary_output_cols = ["binary_"+c for c in ic]
         inverse_col_map = dict(zip(ic, inverse_output_cols))
         inverse_to_orig_col_map = dict(zip(inverse_output_cols, ic))
-        binary_col_map = dict(zip(ic, binary_output_cols))
 
         # Get necessary vars and pull required stats (freqs, scales, means)
         discretizer = self.getOrDefault(self.discretizer)
