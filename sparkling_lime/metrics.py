@@ -221,6 +221,23 @@ class NeighborhoodGeneratorParams(Params):
                                   " the normal is centered on the mean of the"
                                   " feature data."),
                                  typeConverter=TypeConverters.toBoolean)
+    categoricalCols = Param(Params._dummy(), "categoricalCols",
+                            ("Names of categorical columns (only relevant if "
+                             "'discretizer' is None."),
+                            typeConverter=TypeConverters.toListString)
+    binaryOutputCols = Param(Params._dummy(), "binaryOutputCols",
+                             ("Names of columns corresponding to the 'binary' "
+                              "neighborhood generated around that feature. "
+                              "By default, will prefix the names of the "
+                              "inputCols with 'binary_'."),
+                             typeConverter=TypeConverters.toListString)
+    inverseOutputCols = Param(Params._dummy(), "inverseOutputCols",
+                              ("Names of the columns corresponding to the "
+                               "neighborhood generated around that feature by "
+                               "perturbing feature values (inverse of mean-"
+                               "centering and scaling. By default, will prefix "
+                               "the names of the inputCols with 'inverse_'."),
+                              typeConverter=TypeConverters.toListString)
 
     @keyword_only
     def __init__(self):
@@ -274,6 +291,40 @@ class NeighborhoodGeneratorParams(Params):
         """
         return self.getOrDefault(self.sampleAroundInstance)
 
+    def setCategoricalCols(self, value):
+        """
+        Sets the value of :py:attr:categoricalCols
+        """
+        return self._set(categoricalCols=value)
+
+    def getCategoricalCols(self):
+        """
+        Returns the value of categoricalCols or the default value.
+        """
+        return self.getOrDefault(self.categoricalCols)
+
+    def setBinaryOutputCols(self, value):
+        """
+        Sets the value of :py:attr:binaryOutputCols
+        """
+        return self._set(binaryOutputCols=value)
+
+    def getBinaryOutputCols(self):
+        """
+        Returns the value of binaryOutputCols or the default value.
+        """
+        return self.getOrDefault(self.binaryOutputCols)
+
+    def setInverseOutputCols(self, value):
+        """
+        Sets the value of :py:attr:inverseOutputCols
+        """
+        return self._set(inverseOutputCols=value)
+
+    def getInverseOutputCols(self):
+        """Returns the value of inverseOutputCols or the default value."""
+        return self.getOrDefault(self.inverseOutputCols)
+
 
 class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
                             HasOutputCol, HasSeed, Transformer,
@@ -281,16 +332,18 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
 
     @keyword_only
     def __init__(self, inputCols=None, outputCol=None, neighborhoodSize=5000,
-                 discretizer=None, seed=None, sampleAroundInstance=False):
+                 discretizer=None, seed=None, sampleAroundInstance=False,
+                 categoricalCols=None):
         super(NeighborhoodGenerator, self).__init__()
         self._setDefault(neighborhoodSize=5000, discretizer=None,
-                         sampleAroundInstance=False)
+                         sampleAroundInstance=False, categoricalCols=None)
         kwargs = self._input_kwargs
         self.setParams(**kwargs)
 
     @keyword_only
     def setParams(self, inputCols=None, outputCol=None, neighborhoodSize=5000,
-                  discretizer=None, sampleAroundInstance=False, seed=None):
+                  discretizer=None, sampleAroundInstance=False, seed=None,
+                  categoricalCols=None):
         """
         Sets params for this PairwiseEuclideanDistance transformer.
         """
@@ -298,19 +351,61 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         return self._set(**kwargs)
 
     @staticmethod
-    def _make_zeroes(x, y, format):
+    def _make_zeroes(x, y):
         """
-        Make a column of 2darray of zeros[x][y]
+        Make `y` columns of array of zeroes of size `x`
         :param x: number of rows
         :param y: number of columns
         :return: `pyspark.sql.Column` of 2darray of zeros, in 1 column if
             "narrow" format, and in `y` columns in "wide" format (named
             numerically from [0,`y`-1])
         """
-        if format == "narrow":
-            return F.array(*[F.array(*[lit(0)]*y)]*x)
-        elif format == "wide":
-            return [F.array([lit(0)] * x)] * y
+        return [F.array([lit(0)] * x)] * y
+
+    @staticmethod
+    def _make_random_choices_and_binarize(dataset, input_col, num_samples,
+                                          feature_rate_dict,
+                                          output_col="neighborhood",
+                                          seed=None):
+        """
+        Make
+
+        :return: dataset with output_col with an array of num_samples structs
+        of value choice + binary class (is same/diff)
+        """
+        binary_output_col = "binary_" + input_col
+        inverse_output_col = "inverse_" + input_col
+
+        random_state = np.random.RandomState(seed=seed)
+        ordered_rates = [(k, v) for k, v in feature_rate_dict.items()]    # For safe iteration
+
+        idcol = str(hash("_make_random_choices_and_binarize"))
+        dataset = dataset.withColumn(idcol, F.monotonically_increasing_id())
+        dataset.cache()
+        dataset = dataset.withColumn(
+                inverse_output_col,
+                F.array(
+                    [lit(random_state.choice(
+                        [r[0] for r in ordered_rates],
+                        size=1,
+                        replace=True,
+                        p=[r[1] for r in ordered_rates])[0])
+                     for i in num_samples]
+                ))
+        # Hard to iterate over array to make binarized column, so explode instead
+        dataset = dataset.withColumn(inverse_output_col,
+                                     F.explode(inverse_output_col))
+        dataset = dataset.withColumn(
+            binary_output_col,
+            F.when(col(inverse_output_col == col(input_col)), 1).otherwise(0))
+        dataset = dataset.withColumn(
+             output_col,
+             F.struct(inverse_output_col, binary_output_col))
+        dataset = dataset.groupBy(idcol)\
+            .agg(F.collect_list(output_col).alias(output_col),
+                 F.first(input_col).alias(input_col))\
+            .drop(idcol)
+        return dataset
 
     @staticmethod
     def _make_normals(x, y, format, scale, mean=(), cols=None, seed=None):
@@ -366,7 +461,7 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
                     )
                     for i in range(y)]
 
-    def _get_statistics(self, dataset):
+    def _get_scale_statistics(self, dataset):
         """
         Gets the relative scaling factor and means of each feature.
         """
@@ -379,50 +474,84 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         means = [m for m in scaler_model.mean]
         return scales, means
 
-    # TODO: Decide on a format and get rid of the other one
+    def _get_feature_freqs(self, dataset, subset=None):
+        """
+        Returns a dictionary of feature value: frequency for each feature.
+        E.g. {feature_name: {val1: count1, val2: count2, ..., val_n: count_n}
+        """
+        if not subset:
+            subset = self.getOrDefault(self.inputCols)
+        feature_freqs = {}
+        for c in subset:
+            value_counts = dict([(row[c], row["count"]) for row in
+                                dataset.select(c).cube(c).count()
+                                .filter(col(c).isNotNull())
+                                .collect()])
+            total_count = sum(value_counts.values())
+            value_rates = dict((k, v/total_count)
+                               for k, v in value_counts.items())
+            feature_freqs.update({c: value_rates})
+        return feature_freqs
+
     def _transform(self, dataset):
+        # Configure column names and save a map of inputs => outputs
         ic = self.getOrDefault(self.inputCols)
-        oc = self.getOrDefault(self.outputCol)
+        if self.isSet(self.inverseOutputCols):
+            inverse_output_cols = self.getOrDefault(self.inverseOutputCols)
+        else:
+            inverse_output_cols = ["inverse_" + c for c in ic]
+        if self.isSet(self.binaryOutputCols):
+            binary_output_cols = self.getOrDefault(self.binaryOutputCols)
+        else:
+            binary_output_cols = ["binary_"+c for c in ic]
+        inverse_col_map = dict(zip(ic, inverse_output_cols))
+        binary_col_map = dict(zip(ic, binary_output_cols))
+
+        # Get necessary vars and pull required stats (freqs, scales, means)
         discretizer = self.getOrDefault(self.discretizer)
         num_samples = self.getOrDefault(self.neighborhoodSize)
         num_feats = len(ic)
-        format = self.getOrDfeault(self.format)
         seed = self.getOrDefault(self.seed)
         sample_around_instance = self.getOrDefault(self.sampleAroundInstance)
-        scales, means = self._get_statistics(dataset)
+        scales, means = self._get_scale_statistics(dataset)
+        if discretizer:
+            categorical_cols = ic
+            continuous_cols = None
+        else:
+            categorical_cols = self.getOrDefault(self.categoricalCols)
+            continuous_cols = [c for c in ic if c not in categorical_cols]
+        feature_freqs = self._get_feature_freqs(dataset,
+                                                subset=categorical_cols)
 
         # Generate a 2d array of zeros or samples from normal distribution,
         #   size=[numSamples][numFeatures]
         if discretizer:
-            if format == "narrow":
-                dataset = dataset.withColumn(
-                    oc,
-                    self._make_zeroes(num_samples, num_feats, format="narrow"))
-            elif format == "wide":
-                wide_cols = self._make_zeroes(num_samples, num_feats,
-                                              format="wide")
-                wide_cols_named = [c.alias("{}_{}".format(oc, n))
-                                   for c, n in zip(wide_cols, range(num_feats))]
-                dataset = dataset.select("*", *wide_cols_named)
+            pass
+        #     wide_cols = self._make_zeroes(num_samples, num_feats,
+        #                                   format="wide")
+        #     wide_cols_named = [c.alias("{}_{}".format(oc, n))
+        #                        for c, n in zip(wide_cols, range(num_feats))]
+        #     dataset = dataset.select("*", *wide_cols_named)
         else:
             if sample_around_instance:     # Center around feature mean or value
                 cols = [col(c) for c in ic]
                 means = None
             else:
                 cols = None
+            wide_cols = self._make_normals(num_samples, num_feats,
+                                           scale=scales, mean=means,
+                                           cols=cols, format="wide",
+                                           seed=seed)
+            # Duplicate them to be the base for binary and inverse outputs
+            wide_cols_named = [c.alias(i) for c, i
+                               in zip(wide_cols, inverse_output_cols)] + \
+                [c.alias(i) for c, i in zip(wide_cols, binary_output_cols)]
 
-            if format == "narrow":
-                dataset = dataset.withColumn(
-                    oc,
-                    self._make_normals(num_samples, num_feats, scale=scales,
-                                       mean=means, cols=cols, format="narrow",
-                                       seed=seed))
-            elif format == "wide":
-                wide_cols = self._make_normals(num_samples, num_feats,
-                                               scale=scales, mean=means,
-                                               cols=cols, format="wide",
-                                               seed=seed)
-                wide_cols_named = [c.alias("{}_{}".format(oc, n))
-                                   for c, n in zip(wide_cols, range(num_feats))]
-                dataset = dataset.select("*", *wide_cols_named)
+            dataset = dataset.select("*", *wide_cols_named)
+        # Process categorical/discretized features
+        for c in categorical_cols:
+            dataset = self._make_random_choices_and_binarize(
+                dataset, c,  num_samples, feature_freqs[c], inverse_col_map[c]
+            )
+
         return dataset
