@@ -140,15 +140,20 @@ class BaseDiscretizer(BaseSparkMethods):
         return discretized
 
     def undiscretize(self, data):
-        for feature in self.to_discretize:
+        return self.static_undiscretize(data, self.to_discretize,
+                                         self.means, self.stds, self.mins,
+                                         self.maxs, self.random_state)
+    @staticmethod
+    def static_undiscretize(data, subset, means, stds, mins, maxs, random_state):
+        for feature in subset:
             means_replacement = dict([(idx, val) for idx, val
-                                      in enumerate(self.means[feature])])
+                                      in enumerate(means[feature])])
             std_replacement = dict([(idx, val) for idx, val
-                                    in enumerate(self.stds[feature])])
+                                    in enumerate(stds[feature])])
             max_replacement = dict([(idx, val) for idx, val
-                                    in enumerate(self.maxs[feature])])
+                                    in enumerate(maxs[feature])])
             min_replacement = dict([(idx, val) for idx, val
-                                    in enumerate(self.mins[feature])])
+                                    in enumerate(mins[feature])])
             # Add dummy columns to reference the means, etc. for feature buckets
             data = data.withColumn("mean_"+feature, col(feature))\
                 .withColumn("std_"+feature, col(feature))\
@@ -161,7 +166,7 @@ class BaseDiscretizer(BaseSparkMethods):
             data = data.replace(min_replacement, subset="min_"+feature)
             data = data.withColumn(
                     "rand_"+feature,
-                    randn(seed=self.random_state.randint(-100, 100)))\
+                    randn(seed=random_state.randint(-100, 100)))\
                 .withColumn(
                     feature,
                     col("rand_"+feature)*col("std_"+feature)+col("mean_"+feature))
