@@ -215,7 +215,6 @@ class NeighborhoodGeneratorParams(Params):
                                "the names of the inputCols with 'inverse_'."),
                               typeConverter=TypeConverters.toListString)
 
-    @keyword_only
     def __init__(self):
         super(NeighborhoodGeneratorParams, self).__init__()
 
@@ -290,16 +289,18 @@ class NeighborhoodGeneratorParams(Params):
         return self.getOrDefault(self.inverseOutputCols)
 
 
-class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
-                            HasOutputCol, HasSeed, Transformer,
-                            DefaultParamsWritable, DefaultParamsReadable):
+class NeighborhoodGenerator(Transformer, HasInputCols,
+                            HasOutputCol, HasSeed, NeighborhoodGeneratorParams):
+    """
+    Generate a neighborhood around features.
+    """
 
     @keyword_only
     def __init__(self, inputCols=None, outputCol=None, neighborhoodSize=5000,
                  discretizer=None, seed=None, sampleAroundInstance=False,
                  categoricalCols=None):
         super(NeighborhoodGenerator, self).__init__()
-        self._setDefault(neighborhoodSize=5000, discretizer=None,
+        self._setDefault(inputCols=None, neighborhoodSize=5000, discretizer=None,
                          sampleAroundInstance=False, categoricalCols=None)
         kwargs = self._input_kwargs
         self.setParams(**kwargs)
@@ -330,7 +331,7 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
 
         random_state = np.random.RandomState(seed=seed)
         ordered_rates = [(k, v) for k, v in feature_rate_dict.items()]    # For safe iteration
-
+        other_cols = [c for c in dataset.columns if c != input_col]
         idcol = str(hash("_make_random_choices_and_binarize"))
         dataset = dataset.withColumn(idcol, F.monotonically_increasing_id())
         dataset.cache()
@@ -353,7 +354,7 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         dataset = dataset.withColumn(
              output_col,
              F.struct(inverse_output_col, binary_output_col))
-        dataset = dataset.groupBy(idcol)\
+        dataset = dataset.groupBy(idcol, *other_cols)\
             .agg(F.collect_list(output_col).alias(output_col),
                  F.first(input_col).alias(input_col))\
             .drop(idcol)
@@ -455,19 +456,22 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         df = dataset.withColumn(id_col, F.monotonically_increasing_id())
         df.cache()    # Force compute of id
         df = df.withColumn(subset, F.explode(subset))\
-            .withColumn("inverse", col(subset)["inverse"])\
-            .withColumn("binary", col(subset)["binary"])
-        # Get statistics from the source column (original feature data)
-        means, stds, mins, maxs = (discretizer.means[orig_col],
-                                   discretizer.stds[orig_col],
-                                   discretizer.mins[orig_col],
-                                   discretizer.maxs[orig_col])
-        df = discretizer.static_undiscretize(dataset, ["inverse"], means, stds,
-                                             mins, maxs, self.getSeed())
+            .withColumn("inverse", col(subset)["inverse"])
+        means, stds, mins, maxs = ({"inverse": discretizer.means[orig_col]},
+                                   {"inverse": discretizer.stds[orig_col]},
+                                   {"inverse": discretizer.mins[orig_col]},
+                                   {"inverse": discretizer.maxs[orig_col]})
+        df = discretizer.static_undiscretize(df, ["inverse"],
+                                             means,
+                                             stds,
+                                             mins,
+                                             maxs,
+                                             discretizer.random_state)
         df = df.groupBy(id_col, *other_cols)\
             .agg(F.collect_list(F.struct(col("inverse"),
                                          col("inverse").alias("binary")))    # Only kept to avoid KeyError
-                 .alias(subset))
+                 .alias(subset))\
+            .drop(id_col)
         return df
 
     def _transform(self, dataset):
@@ -516,7 +520,7 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
             if discretizer:
                 if c in discretizer.to_discretize:
                     dataset = self._undiscretize_helper(
-                        dataset, c, inverse_to_orig_col_map[c], discretizer)
+                        dataset, inverse_col_map[c], c, discretizer)
         if continuous_cols:
             scales, means = self._get_scale_statistics(dataset,
                                                        subset=continuous_cols)
