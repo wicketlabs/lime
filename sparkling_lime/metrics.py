@@ -519,12 +519,10 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         else:
             inverse_output_cols = ["inverse_" + c for c in ic]
         inverse_col_map = dict(zip(ic, inverse_output_cols))
-        inverse_to_orig_col_map = dict(zip(inverse_output_cols, ic))
 
         # Get necessary vars and pull required stats (freqs, scales, means)
         discretizer = self.getOrDefault(self.discretizer)
         num_samples = self.getOrDefault(self.neighborhoodSize)
-        num_feats = len(ic)
         seed = self.getOrDefault(self.seed)
         sample_around_instance = self.getOrDefault(self.sampleAroundInstance)
         if discretizer:
@@ -546,6 +544,8 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
                     dataset = self._undiscretize_helper(
                         dataset, inverse_col_map[c], c, discretizer)
         if continuous_cols:
+            num_feats = len(continuous_cols)
+            inverse_subset = [inverse_col_map[c] for c in continuous_cols]
             scales, means = self._get_scale_statistics(dataset,
                                                        subset=continuous_cols)
             if sample_around_instance:     # Center around feature mean or value
@@ -557,7 +557,8 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
                                            scale=scales, mean=means,
                                            cols=cols, seed=seed)
             wide_cols_named = [F.struct(c.alias("inverse"), c.alias("binary"))
-                               .alias(inverse_col_map[c]) for c in wide_cols]
+                               .alias(n)
+                               for c, n in zip(wide_cols, inverse_subset)]
             dataset = dataset.select("*", *wide_cols_named)
 
         return dataset
