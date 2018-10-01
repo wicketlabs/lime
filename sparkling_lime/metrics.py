@@ -397,8 +397,8 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
             instead of the mean. Only relevant if a value for `mean` is not
             provided.
         :return: `pyspark.sql.Column` of centered and scaled normal
-            distribution, in 1 column if "narrow" format, and in `y` columns
-            in "wide" format (named numerically from [0,`y`-1])
+            distribution, in `y` columns in "wide" format
+            (named numerically from [0,`y`-1])
         """
         if mean:
             center = mean
@@ -414,22 +414,25 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         # If x=3 & y=2,
         #    return two columns: [n1*s1 + m1, n2*s1+m1, n3*s1*m1]
         #                      & [n1`*s2 + m2, n2`*s2 + m2, n3`*s2+m2]
-            return [F.array(
-                        [randn * scaler + val
-                            for randn, scaler, val
-                            in zip(
-                                [F.randn(seed=seed) for i in range(x)],
-                                [scale[col_idx]]*x,
-                                [center[col_idx]]*x)
-                         ]
-                    )
-                    for col_idx in range(y)]
+        return [F.array(
+                    [randn * scaler + val
+                        for randn, scaler, val
+                        in zip(
+                            [F.randn(seed=seed) for i in range(x)],
+                            [scale[col_idx]]*x,
+                            [center[col_idx]]*x)
+                     ]
+                )
+                for col_idx in range(y)]
 
-    def _get_scale_statistics(self, dataset):
+    def _get_scale_statistics(self, dataset, subset=()):
         """
         Gets the relative scaling factor and means of each feature.
         """
-        ic = self.getOrDefault(self.inputCols)
+        if subset:
+            ic = subset
+        else:
+            ic = self.getOrDefault(self.inputCols)
         assembler = VectorAssembler(inputCols=ic, outputCol="features")
         assembled_data = assembler.transform(dataset)
         scaler = StandardScaler(inputCol="features", outputCol="scaled")
@@ -457,6 +460,40 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
             feature_freqs.update({c: value_rates})
         return feature_freqs
 
+    def _undiscretize_helper(self, dataset, subset, orig_col, discretizer):
+        """
+        Format the dataset so that it can be undiscretized, then undiscretize
+        the variable.
+        :param dataset: pyspark.sql.DataFrame
+        :param subset: Name of the column to undiscretize
+        :param orig_col: Name of the original column that the subset column was
+            created from (original feature name)
+        :param discretizer: A fitted Discretizer class (Quantile/Decile)
+        :returns: pyspark.sql.DataFrame with the sampled `subset` column
+            undiscretized. Also removes the "binary" element of the struct and
+            replaces it with the undiscretized value (since it's no longer
+            relevant as a continuous variable).
+        """
+        other_cols = [c for c in dataset.columns if c != subset]
+        id_col = str(hash("_undiscretize_helper"))
+        df = dataset.withColumn(id_col, F.monotonically_increasing_id())
+        df.cache()    # Force compute of id
+        df = df.withColumn(subset, F.explode(subset))\
+            .withColumn("inverse", col(subset)["inverse"])\
+            .withColumn("binary", col(subset)["binary"])
+        # Get statistics from the source column (original feature data)
+        means, stds, mins, maxs = (discretizer.means[orig_col],
+                                   discretizer.stds[orig_col],
+                                   discretizer.mins[orig_col],
+                                   discretizer.maxs[orig_col])
+        df = discretizer.static_undiscretize(dataset, ["inverse"], means, stds,
+                                             mins, maxs, self.getSeed())
+        df = df.groupBy(id_col, *other_cols)\
+            .agg(F.collect_list(F.struct(col("inverse"),
+                                         col("inverse").alias("binary")))    # Only kept to avoid KeyError
+                 .alias(subset))
+        return df
+
     def _transform(self, dataset):
         # Configure column names and save a map of inputs => outputs
         ic = self.getOrDefault(self.inputCols)
@@ -469,6 +506,7 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         else:
             binary_output_cols = ["binary_"+c for c in ic]
         inverse_col_map = dict(zip(ic, inverse_output_cols))
+        inverse_to_orig_col_map = dict(zip(inverse_output_cols, ic))
         binary_col_map = dict(zip(ic, binary_output_cols))
 
         # Get necessary vars and pull required stats (freqs, scales, means)
@@ -477,7 +515,6 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
         num_feats = len(ic)
         seed = self.getOrDefault(self.seed)
         sample_around_instance = self.getOrDefault(self.sampleAroundInstance)
-        scales, means = self._get_scale_statistics(dataset)
         if discretizer:
             categorical_cols = ic
             continuous_cols = None
@@ -486,35 +523,29 @@ class NeighborhoodGenerator(NeighborhoodGeneratorParams, HasInputCols,
             continuous_cols = [c for c in ic if c not in categorical_cols]
         feature_freqs = self._get_feature_freqs(dataset,
                                                 subset=categorical_cols)
-
-        # Generate a 2d array of zeros or samples from normal distribution,
-        #   size=[numSamples][numFeatures]
-        if discretizer:
-            pass
-        #     wide_cols = self._make_zeroes(num_samples, num_feats,
-        #                                   format="wide")
-        #     wide_cols_named = [c.alias("{}_{}".format(oc, n))
-        #                        for c, n in zip(wide_cols, range(num_feats))]
-        #     dataset = dataset.select("*", *wide_cols_named)
-        else:
+        for c in categorical_cols:
+            # Randomly sample according to categorical value frequency
+            dataset = self._make_random_choices_and_binarize(
+                    dataset, c,  num_samples, feature_freqs[c],
+                    inverse_col_map[c])
+            # Undiscretize if the column is a discretized continuous feature
+            if discretizer:
+                if c in discretizer.to_discretize:
+                    dataset = self._undiscretize_helper(
+                        dataset, c, inverse_to_orig_col_map[c], discretizer)
+        if continuous_cols:
+            scales, means = self._get_scale_statistics(dataset,
+                                                       subset=continuous_cols)
             if sample_around_instance:     # Center around feature mean or value
-                cols = [col(c) for c in ic]
+                cols = [col(c) for c in continuous_cols]
                 means = None
             else:
                 cols = None
             wide_cols = self._make_normals(num_samples, num_feats,
                                            scale=scales, mean=means,
                                            cols=cols, seed=seed)
-            # Duplicate them to be the base for binary and inverse outputs
-            wide_cols_named = [c.alias(i) for c, i
-                               in zip(wide_cols, inverse_output_cols)] + \
-                [c.alias(i) for c, i in zip(wide_cols, binary_output_cols)]
-
+            wide_cols_named = [F.struct(c.alias("inverse"), c.alias("binary"))
+                               .alias(inverse_col_map[c]) for c in wide_cols]
             dataset = dataset.select("*", *wide_cols_named)
-        # Process categorical/discretized features
-        for c in categorical_cols:
-            dataset = self._make_random_choices_and_binarize(
-                dataset, c,  num_samples, feature_freqs[c], inverse_col_map[c]
-            )
 
         return dataset
