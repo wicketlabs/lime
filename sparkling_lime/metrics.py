@@ -10,10 +10,9 @@ from pyspark.ml.util import DefaultParamsReadable, DefaultParamsWritable
 from pyspark.ml.param.shared import HasInputCols, HasInputCol, HasOutputCol, HasSeed
 from pyspark.ml.linalg import VectorUDT
 from pyspark.ml.param import Param, Params, TypeConverters
-from pyspark.ml.feature import VectorAssembler, StandardScaler
+from pyspark.ml.feature import VectorAssembler, StandardScaler, Bucketizer
 from pyspark import keyword_only
-import numpy as np
-from numpy.random import RandomState
+from pyspark.ml import Pipeline
 
 
 class HasDistanceMetric(Params):
@@ -316,54 +315,86 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         return self._set(**kwargs)
 
     @staticmethod
+    def _make_bins(freqs):
+        """
+        Create splits from feature frequencies to use in
+        `pyspark.ml.feature.Bucketizer` instances.
+        :param freqs: List of (value, frequency) tuples
+        :return: Tuple of list of bins for a bucketizer and bin: value dictionary
+        """
+        bins = [0]
+        bin_map = {}
+        sorted_freqs = sorted(freqs, key=lambda x: x[1])
+        for i, f in enumerate(sorted_freqs):
+            bins.append(bins[i] + f[1])
+            bin_map.update({i: f[0]})
+        return bins, bin_map
+
+    @staticmethod
     def _make_random_choices_and_binarize(dataset, input_col, num_samples,
                                           feature_rate_dict,
                                           output_col="neighborhood",
                                           seed=None):
         """
-        Make
-
+        Make an array of structs, size `num_samples`, that are the result of
+        random sampling from all possible categorical feature values at the
+        rates they are present in the feature data. The struct contains the
+        `inverse` element, which is the sampled value, and the `binary`
+        element, which is a code that reflects whether the value is the same
+        (1.0) or different (0.0) from the original categorical value.
+        :param dataset: `pyspark.sql.DataFrame` of features in wide format
+        :param input_col: Name of the input column to generate samples from
+        :param num_samples: Number of samples to generate
+        :param feature_rate_dict: Dictionary of feature values to rates the
+        value occured in the dataset
+        :param seed: Random seed
         :return: dataset with output_col with an array of num_samples structs
         of value choice + binary class (is same/diff)
         """
-        binary_output_col = "binary"
-        inverse_output_col = "inverse"
-
-        random_state = np.random.RandomState(seed=seed)
         ordered_rates = [(k, v) for k, v in feature_rate_dict.items()]    # For safe iteration
-        other_cols = [c for c in dataset.columns if c != input_col]
-        idcol = str(hash("_make_random_choices_and_binarize"))
-        dataset = dataset.withColumn(idcol, F.monotonically_increasing_id())
-        dataset.cache()
+        bins, bin_map = NeighborhoodGenerator._make_bins(ordered_rates)
+        orig_cols = dataset.columns
+        cols = [F.rand(seed=seed).alias("inverse_{}_{}".format(input_col, i))
+                for i in range(num_samples)]
+        colnames = ["inverse_{}_{}".format(input_col, i)
+                    for i in range(num_samples)]
+        bucketed_colnames = ["bucketed_"+c for c in colnames]
+        dataset = dataset.select("*", *cols)
+        bucketizers = [Bucketizer(inputCol=ic, outputCol="bucketed_"+ic,
+                                  splits=bins)
+                       for ic in colnames]
+        pipeline = Pipeline(stages=bucketizers)
+        dataset = pipeline.fit(dataset).transform(dataset)\
+            .replace(bin_map, subset=bucketed_colnames)\
+            .drop(*colnames)
+        for c in bucketed_colnames:
+            dataset = dataset.withColumn(
+                "binary_"+c,
+                F.when(col(c) == col(input_col), 1).otherwise(
+                    0))
+            dataset = dataset.withColumn(
+                "struct_"+c,
+                F.struct(col(c).alias("inverse"),
+                         col("binary_"+c).alias("binary")))
         dataset = dataset.withColumn(
-                inverse_output_col,
-                F.array(
-                    [lit(float(random_state.choice(
-                        [r[0] for r in ordered_rates],
-                        size=1,
-                        replace=True,
-                        p=[r[1] for r in ordered_rates])[0]))
-                     for i in range(num_samples)]
-                ))
-        # Hard to iterate over array to make binarized column, so explode instead
-        dataset = dataset.withColumn(inverse_output_col,
-                                     F.explode(inverse_output_col))
-        dataset = dataset.withColumn(
-            binary_output_col,
-            F.when(col(inverse_output_col) == col(input_col), 1).otherwise(0))
-        dataset = dataset.withColumn(
-             output_col,
-             F.struct(inverse_output_col, binary_output_col))
-        dataset = dataset.groupBy(idcol, *other_cols)\
-            .agg(F.collect_list(output_col).alias(output_col),
-                 F.first(input_col).alias(input_col))\
-            .drop(idcol)
+            output_col,
+            F.array([col("struct_"+c) for c in bucketed_colnames]))
+        dataset = dataset.select(*orig_cols, output_col)
         return dataset
 
     @staticmethod
     def _make_normals(x, y, scale, mean=(), cols=None, seed=None):
         """
-        Make a column of 2darray of zeros[x][y]
+        Make `y` columns of an array of `x` samples of a normal distribution,
+        scaled with `scale` and centered around a mean or the values in
+        `cols`.
+        For example, let `n` be a random sample from normal distribution,
+        `s` be the scaling factor for a feature, and `m` the mean for the
+        feature:
+              return (n*s) + m
+        If x=3 & y=2, return two columns:
+            [n1*s1 + m1, n2*s1+m1, n3*s1*m1]
+            & [n1`*s2 + m2, n2`*s2 + m2, n3`*s2+m2]
         :param x: number of rows
         :param y: number of columns
         :param scale: Iterable of len(`y`), of values by which to scale the
@@ -381,26 +412,12 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
             center = mean
         else:
             center = cols
-
-        # For `y` columns, generate `x` samples of normal distribution, scale
-        #   each value by scaling factor and then add the center value.
-        # For example, let `n` be a random sample from normal distribution,
-        #   `s` be the scaling factor for a feature, and `m` the mean for the
-        #    feature:
-        #       return (n*s) + m
-        # If x=3 & y=2,
-        #    return two columns: [n1*s1 + m1, n2*s1+m1, n3*s1*m1]
-        #                      & [n1`*s2 + m2, n2`*s2 + m2, n3`*s2+m2]
         return [F.array(
-                    [randn * scaler + val
-                        for randn, scaler, val
-                        in zip(
-                            [F.randn(seed=seed) for i in range(x)],
-                            [scale[col_idx]]*x,
-                            [center[col_idx]]*x)
-                     ]
-                )
-                for col_idx in range(y)]
+                    [F.struct(
+                        *[(F.rand() * scale[j] + center[j]).alias(n)
+                          for n in ["inverse", "binary"]])
+                        for i in range(x)])
+                for j in range(y)]
 
     def _get_scale_statistics(self, dataset, subset=()):
         """
@@ -476,17 +493,31 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
 
     def _transform(self, dataset):
         """
+        Generates a neighborhood around a prediction.
+        For numerical features, perturb them by sampling from a normal
+        distribution and doing the inverse operation of mean-centering and
+        scaling, according to the means and stds in the training data. For
+        categorical feature, perturb by sampling according to the training
+        distribution, and making a binary feature that is 1 when the value
+        is the same as the instance being explained.
+
+        The neighborhood is an array of structs with the following schema:
+
         Output schema:
             original dataset + for each feature column:
 
         root
-         |-- inverse_<featureName>: array (nullable = true)
-         |    |-- element: struct (containsNull = true)
+         |-- <outputCol>: array (nullable = true)
+         |    |-- element: struct (containsNull = false)
          |    |    |-- inverse: double (nullable = false)
          |    |    |-- binary: double (nullable = false)
 
-        :param dataset:
-        :return:
+        For continuous variables, the 'binary' element is the same as the
+        'inverse' element (since it is only relevant for categoical variables).
+
+        :param dataset: `pyspark.sql.DataFrame` of features in wide format
+        (one feature per column)
+        :return: Dataset with original + perturbed features in wide format
         """
         # Configure column names and save a map of inputs => outputs
         ic = self.getOrDefault(self.inputCols)
@@ -514,11 +545,13 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
             dataset = self._make_random_choices_and_binarize(
                     dataset, c,  num_samples, feature_freqs[c],
                     inverse_col_map[c])
+            dataset.cache()
             # Undiscretize if the column is a discretized continuous feature
             if discretizer:
                 if c in discretizer.to_discretize:
                     dataset = self._undiscretize_helper(
                         dataset, inverse_col_map[c], c, discretizer)
+            dataset.cache()
         if continuous_cols:
             num_feats = len(continuous_cols)
             inverse_subset = [inverse_col_map[c] for c in continuous_cols]
@@ -532,8 +565,7 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
             wide_cols = self._make_normals(num_samples, num_feats,
                                            scale=scales, mean=means,
                                            cols=cols, seed=seed)
-            wide_cols_named = [F.struct(c.alias("inverse"), c.alias("binary"))
-                               .alias(n)
+            wide_cols_named = [c.alias(n)
                                for c, n in zip(wide_cols, inverse_subset)]
             dataset = dataset.select("*", *wide_cols_named)
 
