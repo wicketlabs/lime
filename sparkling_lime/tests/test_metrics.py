@@ -6,6 +6,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, struct
 import numpy as np
 import pandas as pd
+import random
 from pyspark.ml.tests import SparkSessionTestCase
 
 
@@ -126,8 +127,8 @@ class NeighborhoodGeneratorTests(SparkSessionTestCase):
         data = [[0], [0], [1], [1], [1], [1], [1], [1], [1], [1]]
         rates = {0: 0.2, 1: 0.8}
         df = self.spark.createDataFrame(data, ["c1"])
-        actual = metrics.NeighborhoodGenerator._make_random_choices_and_binarize(
-            df, "c1", 100, rates)
+        actual = metrics.NeighborhoodGenerator.\
+            _make_random_choices_and_binarize(df, "c1", 100, rates)
         sample_row = actual.head()
         # orig_val = sample_row["c1"]
         self.assertEqual(10, actual.count(), "Wrong count. Expected 10, got {}"
@@ -160,8 +161,9 @@ class NeighborhoodGeneratorTests(SparkSessionTestCase):
             actual_cols = metrics.NeighborhoodGenerator._make_normals(
                 150, 5, scales, mean=means)
             actual_mean_df = df.select([c.alias(str(i))
-                                        for c, i in zip(actual_cols,
-                                                        range(len(actual_cols)))])
+                                        for c, i
+                                        in zip(actual_cols,
+                                               range(len(actual_cols)))])
             self.assertEqual(5, len(actual_mean_df.columns),
                              "Expected 5 columns but got {}"
                              .format(len(df.columns)))
@@ -224,7 +226,8 @@ class NeighborhoodGeneratorTests(SparkSessionTestCase):
             [[i, j] for i, j in zip(range(10), [1]*10)], ["c1", "c2"])
         ng = metrics.NeighborhoodGenerator(inputCols=["c1", "c2"])
         actual_scales, actual_means = ng._get_scale_statistics(df)
-        self.assertEqual(4.5, actual_means[0], "Wrong mean. Expected 4.5, got {}"
+        self.assertEqual(4.5, actual_means[0],
+                         "Wrong mean. Expected 4.5, got {}"
                          .format(actual_means[0]))
         self.assertEqual(1, actual_means[1], "Wrong mean. Expected 1, got {}"
                          .format(actual_means[1]))
@@ -248,7 +251,26 @@ class NeighborhoodGeneratorTests(SparkSessionTestCase):
                              "Expected frequency of 1. Got {}"
                              .format(actual_freqs["c2"]))
 
-    def test_neighborhood_generator(self):
+    def test_make_bins(self):
+        with self.subTest("Works with repeated values"):
+            repeat_freqs = [(1, 0.25), (0, 0.25), (2, 0.5)]
+            repeat_bins, repeat_map = \
+                metrics.NeighborhoodGenerator._make_bins(repeat_freqs)
+            self.assertEqual([0, 0.25, 0.5, 1.0], repeat_bins,
+                             "Bins didn't have expected values.")
+            self.assertDictEqual({0: 1, 1: 0, 2: 2}, repeat_map,
+                                 "Bins didn't map to correct values.")
+
+        with self.subTest("Works with unique values"):
+            unique_freqs = [(0, 0.2), (9, 0.8)]
+            unique_bins, unique_map \
+                = metrics.NeighborhoodGenerator._make_bins(unique_freqs)
+            self.assertEqual([0, 0.2, 1.0], unique_bins,
+                             "Bins didn't have expected values.")
+            self.assertDictEqual({0: 0, 1: 9}, unique_map,
+                                 "Bins didn't map to correct values.")
+
+    def test_neighborhood_generator_transform(self):
         pdf = pd.DataFrame({"f0": np.random.normal(0, 1, 100),
                             "f1": np.random.normal(100, 10, 100),
                             "f2": [0]*80 + [1]*20})
@@ -266,10 +288,48 @@ class NeighborhoodGeneratorTests(SparkSessionTestCase):
             inputCols=df.columns, neighborhoodSize=100,
             seed=42, sampleAroundInstance=False, categoricalCols=["f2"])
 
-        with self.subTest("Expected values returned for discretized data."):
+        actual_disc = disc_nGenerator.transform(disc_df)
+        actual_mean = undisc_nGeneratorMean.transform(df)
+        actual_sample = undisc_nGeneratorInstance.transform(df)
 
-            actual = disc_nGenerator.transform(disc_df)
-            actual.show(truncate=False)
+        types = [("discretized", actual_disc),
+                 ("undiscretized, mean-sampled", actual_mean),
+                 ("undiscretized, value-sampled", actual_sample)]
+        for name, result in types:
+            with self.subTest("Output has expected format for data type: '{}'"
+                              .format(name)):
+                sample_row = result.head()
+                self.assertEqual(100, result.count(),
+                                 "Expected 100 rows but got {}"
+                                 .format(result.count()))
+                self.assertCountEqual(["f0", "f1", "f2", "inverse_f1",
+                                       "inverse_f2", "inverse_f0"],
+                                      result.columns,
+                                      "Unexpected columns in result for {}"
+                                      .format(name))
+                cat_vals = [r["inverse"] for r in sample_row["inverse_f2"]]
+                cat_binary = [r["binary"] for r in sample_row["inverse_f2"]]
 
-        with self.subTest("Expected values returned for undiscretized data."):
-            pass
+                self.assertCountEqual([0.0, 1.0], list(set(cat_vals)),
+                                      "Found a value != 0 or 1 in values.")
+                self.assertCountEqual([0.0, 1.0], list(set(cat_binary)),
+                                      "Found a value != 0 or 1 in binary "
+                                      "values.")
+                for col in ["inverse_f0", "inverse_f1", "inverse_f2"]:
+                    self.assertEqual(100, len(sample_row[col]),
+                                     ("Expected neighborhood of 100 but got"
+                                      " {} for column {}, inverse").format(
+                                         len(sample_row[col]), col))
+                    self.assertEqual(
+                        2, len(sample_row[col][random.randint(0, 100)]),
+                        "Didn't get the expected 2 values for each sample.")
+            for col in ["inverse_f0", "inverse_f1", "inverse_f2"]:
+                with self.subTest("Output has unique values for each "
+                                  " neighborhood: column {}".format(col)):
+                    collection = result.collect()
+                    random_samples = [random.randint(0, 100) for i in range(2)]
+                    self.assertNotEqual(collection[random_samples[0]][col],
+                                        collection[random_samples[1]][col],
+                                        "Expected unique values but got "
+                                        "duplicate samples for column {}"
+                                        .format(col))
