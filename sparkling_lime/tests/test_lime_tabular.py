@@ -1,5 +1,4 @@
 from pyspark.ml.tests import SparkSessionTestCase
-from pyspark.ml.base import Estimator
 from sparkling_lime.lime_tabular import ReusedEstimator, LocalLinearLearner
 from pyspark.ml.regression import LinearRegression
 from pyspark.ml.linalg import Vectors
@@ -48,7 +47,7 @@ class TestReusedEstimator(SparkSessionTestCase):
 
 class TestLocalLinearLearner(SparkSessionTestCase):
     def test_parallel_fitting(self):
-        lll = LocalLinearLearner()
+        lll = LocalLinearLearner(labelCol="label", featuresCol="features")
         data = [(0, Vectors.dense([-1.0, -1.0]),),
                 (0, Vectors.dense([-1.0, 1.0]),),
                 (1, Vectors.dense([1.0, -1.0]),),
@@ -58,9 +57,9 @@ class TestLocalLinearLearner(SparkSessionTestCase):
         datasets = [dataset] * 10
 
         lll.setParallelism(1)
-        serial_models = lll.fit(datasets).getFittedModels()
+        serial_models = lll.fit(datasets).fittedModels
         lll.setParallelism(2)
-        parallel_models = lll.fit(datasets).getFittedModels()
+        parallel_models = lll.fit(datasets).fittedModels
         self.assertEqual(len(serial_models), len(parallel_models),
                          "Number of models processed serially was not the same"
                          " as the number of models processed in parallel.")
@@ -68,7 +67,7 @@ class TestLocalLinearLearner(SparkSessionTestCase):
 
 class TestParallelTransformer(SparkSessionTestCase):
     def test_parallel_transform(self):
-        lll = LocalLinearLearner()
+        lll = LocalLinearLearner(labelCol="label", featuresCol="features")
         data = [(0, Vectors.dense([-1.0, -1.0]),),
                 (0, Vectors.dense([-1.0, 1.0]),),
                 (1, Vectors.dense([1.0, -1.0]),),
@@ -77,9 +76,9 @@ class TestParallelTransformer(SparkSessionTestCase):
         dataset = self.spark.createDataFrame(data, ["label", "features"])
         datasets = [dataset] * 10
         model = lll.fit(datasets)
-        model.setParallelism(1)
+        model.parallelism = 1
         serial_transformed = model.transform(datasets)
-        model.setParallelism(2)
+        model.parallelism = 2
         parallel_transformed = model.transform(datasets)
         self.assertEqual(len(serial_transformed), len(parallel_transformed),
                          "Number of transformed datasets processed serially"
@@ -90,6 +89,9 @@ class TestParallelTransformer(SparkSessionTestCase):
                              "Columns of transformed data processed serially"
                              " was not the same as the datasets processed"
                              " in parallel.")
+
+        parallel_transformed[0].show()
+        serial_transformed[0].show()
 
 class MockReusedLinReg(LinearRegression, ReusedEstimator):
     def __init__(self):
