@@ -1,28 +1,12 @@
-# TODO UPDATE DOCS
-
-
-from sparkling_lime.sparkling_lime_base import BaseSparkMethods
-from sparkling_lime.discretize import BaseDiscretizer, QuartileDiscretizer, \
-    DecileDiscretizer
-from sparkling_lime.metrics import HasKernelWidth, HasDistanceMetric
-import numpy as np
-import pyspark.sql.functions as F
-from pyspark.sql.functions import col, sqrt, exp, pow
-from pyspark.sql.types import DoubleType
-from scipy.spatial import distance
-from pyspark.ml import Transformer, UnaryTransformer, Estimator
-from pyspark.ml.util import DefaultParamsReadable, DefaultParamsWritable
-from pyspark.ml.param.shared import HasInputCol, HasOutputCol, HasFeaturesCol, \
-    HasLabelCol, HasNumFeatures, HasSeed, HasParallelism, HasPredictionCol
-from pyspark.ml.param import Param, Params, TypeConverters
+from pyspark.ml import Transformer, Estimator
+from pyspark.ml.param.shared import HasFeaturesCol, \
+    HasLabelCol, HasSeed, HasParallelism, HasPredictionCol
+from pyspark.ml.param import Param, Params
 from pyspark import keyword_only
 from pyspark.ml.regression import LinearRegression
 from multiprocessing.pool import ThreadPool
 from pyspark.sql import DataFrame
 import threading
-from pyspark.ml.common import _py2java
-from pyspark.ml.wrapper import JavaParams
-from pyspark.sql import SparkSession
 
 
 def _parallelDatasetsFitTasks(wrapper, est, trains, epm):
@@ -117,17 +101,21 @@ class ReusedEstimator(Params):
 
 class _TransformMultipleDatasetsIterator(object):
     """
-    Used by default implementation of Estimator.fitMultiple to produce models in a thread safe
-    iterator. This class handles the simple case of fitMultiple where each param map should be
-    fit independently.
+    Used by default implementation of Estimator.fitMultiple to produce models in
+    a thread safe iterator. This class handles the simple case of
+    transformMultipleDatasets where each dataset and model should be
+    transformed independently.
 
-    :param fitSingleModel: Function: (int => Model) which fits an estimator to a dataset.
-        `fitSingleModel` may be called up to `numModels` times, with a unique index each time.
-        Each call to `fitSingleModel` with an index should return the Model associated with
-        that index.
-    :param numModel: Number of models this iterator should produce.
+    :param transformSingleModel: Function: (int => Model) which calls the
+    `transform` method on a dataset. `transformSingleDataset` may be called up
+    to `numModels` times, with a unique index each time.  Each call to
+    `transformSingleDataset` with an index should return the transformed dataset
+    associated with that index, created by the fitted model associated with
+    that index.
+    :param numModel: Number of models this iterator should use. Should be the
+    same as the number of transformed datasets desired.
 
-    See Estimator.fitMultiple for more info.
+    See ParallelTransformer.transformMultipleDatasets for more info.
     """
     def __init__(self, transformSingleModel, numModels):
         """
@@ -156,17 +144,20 @@ class _TransformMultipleDatasetsIterator(object):
 
 class _FitMultipleDatasetsIterator(object):
     """
-    Used by default implementation of Estimator.fitMultiple to produce models in a thread safe
-    iterator. This class handles the simple case of fitMultiple where each param map should be
-    fit independently.
+    Used by default implementation of Estimator.fitMultipleDatasests to produce
+    models in a thread safe iterator. This class handles the simple case of
+    fitMultipleDatasets where each dataset should be used to fit each model
+    independently.
 
-    :param fitSingleModel: Function: (int => Model) which fits an estimator to a dataset.
-        `fitSingleModel` may be called up to `numModels` times, with a unique index each time.
-        Each call to `fitSingleModel` with an index should return the Model associated with
-        that index.
+    :param fitSingleModel: Function: (int => Model) which fits an estimator
+    to a dataset.
+        `fitSingleModel` may be called up to `numModels` times, with a unique
+        index each time.
+        Each call to `fitSingleModel` with an index should return the Model
+        associated with that index.
     :param numModel: Number of models this iterator should produce.
 
-    See Estimator.fitMultiple for more info.
+    See ReusedEstimator.fitMultipleDatasets for more info.
     """
     def __init__(self, fitSingleModel, numModels):
         """
@@ -201,13 +192,13 @@ class LocalLinearLearnerParams(Params):
 
     def setEstimator(self, value):
         """
-        Sets the value of :py:attr:`localEstimator`
+        Sets the value of :py:attr:`estimator`
         """
         return self._set(estimator=value)
 
     def getEstimator(self):
         """
-        Gets the value of localEstimator or its default value.
+        Gets the value of estimator or its default value.
         """
         return self.getOrDefault(self.estimator)
 
@@ -226,27 +217,27 @@ class LocalLinearLearnerParams(Params):
 
 class LocalLinearLearner(HasFeaturesCol, HasLabelCol, HasSeed,
                          Estimator, ReusedEstimator, LocalLinearLearnerParams,
-                         DefaultParamsReadable, DefaultParamsWritable,
                          HasParallelism):
     """
-    # NOTE: Need pre-weighted and distance-calculated data (is this okay????)
     """
 
     @keyword_only
-    def __init__(self, estimator=None, featuresCol="neighborhood",
-                 labelCol="localLabel", parallelism=1, seed=None):
-        super(LocalLinearLearner, self).__init__()
+    def __init__(self, estimator=None, estimatorParamMap=None,
+                 featuresCol="neighborhood", labelCol="localLabel",
+                 parallelism=1, seed=None):
+        super().__init__()
         self._setDefault(featuresCol="neighborhood", labelCol="localLabel",
-                         parallelism=1,
-                         localEstimator=LinearRegression(
+                         parallelism=1, estimatorParamMap=None,
+                         estimator=LinearRegression(
                              regParam=1.0, elasticNetParam=0.0,
                              featuresCol=featuresCol, labelCol=labelCol))
         kwargs = self._input_kwargs
         self.setParams(**kwargs)
 
     @keyword_only
-    def setParams(self, estimator=None, labelCol="localLabel",
-                  featuresCol="neighborhood", parallelism=1):
+    def setParams(self, estimator=None, estimatorParamMap=None,
+                  labelCol="localLabel", featuresCol="neighborhood",
+                  parallelism=1, seed=None):
         """
         Sets params for this KernelWeight transformer.
         """
@@ -254,8 +245,8 @@ class LocalLinearLearner(HasFeaturesCol, HasLabelCol, HasSeed,
         return self._set(**kwargs)
 
     def _fit(self, datasets):
-        est = self.getOrDefault(self.localEstimator)
-        epm = est.extractParamMap()
+        est = self.getOrDefault(self.estimator)
+        epm = self.getOrDefault(self.estimatorParamMap)
         if isinstance(datasets, DataFrame):
             datasets = [datasets]
         else:
@@ -270,50 +261,36 @@ class LocalLinearLearner(HasFeaturesCol, HasLabelCol, HasSeed,
         llm = self._copyValues(LocalLinearLearnerModel(fittedModels=models))
         return llm
 
+    def copy(self, extra=None):
+        """
+        Creates a copy of this instance with a randomly generated uid
+        and some extra params. This copies the underlying estimator,
+        creates a deep copy of the embedded paramMap, and
+        copies the embedded and extra parameters over.
+
+        :param extra: Extra parameters to copy to the new instance
+        :return: Copy of this instance
+        """
+        if extra is None:
+            extra = dict()
+        newLLL = Params.copy(self, extra)
+        if self.isSet(self.estimator):
+            newLLL.setEstimator(self.getEstimator().copy(extra))
+        # estimatorParamMap remains the same
+        return newLLL
+
 
 class LocalLinearLearnerModel(HasFeaturesCol, HasLabelCol, HasPredictionCol,
-                              HasParallelism, HasSeed, LocalLinearLearnerParams,
+                              HasSeed,
                               Transformer, ParallelTransformer):
-    fittedModels = Param(Params._dummy(), "fittedModels",
-                         "List of models fitted to datasets.")
-
-    def setFittedModels(self, value):
-        """
-        Sets the value of :py:attr:`fittedModels`
-        """
-        return self._set(fittedModels=value)
-
-    def getFittedModels(self):
-        """
-        Gets the value of fittedModels or the default.
-        """
-        return self.getOrDefault(self.fittedModels)
-
     @keyword_only
-    def __init__(self, globalEstimator=None,
-                 featuresCol="features", labelCol="label",
-                 localLabelCol="localLabel", parallelism=1,
-                 seed=None, fittedModels=()):
+    def __init__(self, fittedModels=(), parallelism=1):
         super().__init__()
-        self._setDefault(featuresCol="features",
-                         labelCol="label", localLabelCol="localLabel",
-                         parallelism=1)
-        kwargs = self._input_kwargs
-        self.setParams(**kwargs)
-
-    @keyword_only
-    def setParams(self, globalEstimator=None,
-                  labelCol="label", localLabelCol="localLabel",
-                  featuresCol="features",
-                  explainLabels=(1,), fittedModels=()):
-        """
-        Sets params for this KernelWeight transformer.
-        """
-        kwargs = self._input_kwargs
-        return self._set(**kwargs)
+        self.parallelism = parallelism
+        self.fittedModels = list(fittedModels)
 
     def _transform(self, datasets):
-        models = self.getOrDefault(self.fittedModels)
+        models = self.fittedModels
         if isinstance(datasets, DataFrame):
             datasets = [datasets]
         else:
@@ -323,149 +300,26 @@ class LocalLinearLearnerModel(HasFeaturesCol, HasLabelCol, HasPredictionCol,
         if numModels != len(datasets):
             raise ValueError("Number of models did not match number of datasets"
                              " to transform.")
-        pool = ThreadPool(processes=min(self.getParallelism(), numModels))
+        pool = ThreadPool(processes=min(self.parallelism, numModels))
         transformed_datasets = [0] * len(datasets)
         tasks = _parallelDatasetsTransformTasks(self, models, datasets)
         for j, transformed_data in pool.imap_unordered(lambda f: f(), tasks):
             transformed_datasets[j] = transformed_data
             datasets[j].unpersist()
         return transformed_datasets
-#
-#
-# class LimeTabularExplainer(BaseSparkMethods):
-#     def __init__(self,
-#                  training_data,
-#                  mode="classification",
-#                  training_labels=None,
-#                  feature_names=None,
-#                  categorical_features=None,
-#                  categorical_names=None,
-#                  kernel_width=None,
-#                  verbose=False,
-#                  class_names=None,
-#                  feature_selection='auto',
-#                  discretize_continuous=True,
-#                  discretizer='quartile',
-#                  sample_around_instance=False,
-#                  random_state=None):
-#         """
-#
-#         :param training_data:
-#         :param mode:
-#         :param training_labels:
-#         :param feature_names:
-#         :param categorical_features: Names of categorical feature columns
-#         :param categorical_names: -- basically the stringindexer map #TODO
-#         :param kernel_width:
-#         :param verbose:
-#         :param class_names:
-#         :param feature_selection:
-#         :param discretize_continuous:
-#         :param discretizer:
-#         :param sample_around_instance:
-#         :param random_state:
-#         """
-#         super().__init__()
-#         # TODO
-#         # self.random_state = check_random_state(random_state)
-#         self.mode = mode
-#         self.categorical_features = categorical_features or []
-#         self.categorical_names = categorical_names or {}
-#         self.sample_around_instance = sample_around_instance
-#         self.feature_names = feature_names or []
-#         self.discretizer = None
-#         if discretize_continuous:
-#             if discretizer == 'quartile':
-#                 self.discretizer = QuartileDiscretizer(
-#                         training_data, self.categorical_features,
-#                         self.feature_names, labels=training_labels)
-#             elif discretizer == 'decile':
-#                 self.discretizer = DecileDiscretizer(
-#                         training_data, self.categorical_features,
-#                         self.feature_names, labels=training_labels)
-#             elif isinstance(discretizer, BaseDiscretizer):
-#                 self.discretizer = discretizer
-#             else:
-#                 raise ValueError(("Discretizer must be 'quartile', 'decile',",
-#                                   " or a BaseDiscretizer instance"))
-#
-#         self.feature_selection = feature_selection
-#         self.scaler = None
-#         self.class_names = class_names
-#         self.scaler.fit(training_data)  # TODO
-#         self.feature_values = {}
-#         self.feature_frequencies = {}
-#
-#
-# class ExplainerParams(Params):
-#     localEstimator = Param(Params._dummy(), "localEstimator",
-#                            "Regressor to use in explanation. Defaults to ridge"
-#                            " regression.")
-#     globalEstimator = Param(Params._dummy(), "globalEstimator",
-#                             "Fitted model to generate global predictions on "
-#                             "perturbed dataset.")
-#     explainLabels = Param(Params._dummy(), "explainLabels",
-#                           "Iterable of (numerical) labels to be explained.",
-#                           typeConverter=TypeConverters.toListInt)
-#     discretizer = Param(Params._dummy(), "discretizer",
-#                         ("The discretizer. Supported discretizers are "
-#                          "'QuartileDiscretizer', 'DecileDiscretizer' or None."))
-#     weightCol = Param(Params._dummy(), "weightCol",
-#                       "Name of column with weights.",
-#                       typeConverter=TypeConverters.toString)
-#     distanceCol = Param(Params._dummy(), "distanceCol",
-#                         "Name of column with feature distances.",
-#                         typeConverter=TypeConverters.toString)
-#     neighborhoodCol = Param(Params._dummy(), "neighborhoodCol",
-#                             "Name of column with neighborhood of values "
-#                             "sampled around a mean or feature value according "
-#                             "to the feature's statistics. Needs to be an array "
-#                             "of named structs (inverse, binary).")
-#     originalFeaturesCol = Param(Params._dummy(), "originalFeatureCol",
-#                                 "")  # TODO
-#     localLabelCol = Param(Params._dummy(), "localLabelCol", "")  # TODO
-#     estimatorParamMap = Param(Params._dummy(), "estimatorParamMap", "")  # TODO
-#
-#     def setLocalEstimator(self, value):
-#         """
-#         Sets the value of :py:attr:`localEstimator`
-#         """
-#         return self._set(localEstimator=value)
-#
-#     def getLocalEstimator(self):
-#         """
-#         Gets the value of localEstimator or its default value.
-#         """
-#         return self.getOrDefault(self.localEstimator)
-#
-#     def setNeighborhoodCol(self, value):
-#         """
-#         Sets the value of :py:attr: `neighborhoodCol`
-#         """
-#         return self._set(neighborhoodCol=value)
-#
-#     def getNeighborhoodCol(self):
-#         """
-#         Gets the value of neighborhoodCol or its default value.
-#         """
-#         return self.getOrDefault(self.neighborhoodCol)
-#
-#     def setEstimatorParamMap(self, value):
-#         """
-#         Sets the value of :py:attr:`estimatorParamMap`.
-#         """
-#         return self._set(estimatorParamMaps=value)
-#
-#     def getEstimatorParamMap(self):
-#         """
-#         Gets the value of estimatorParamMap or its default value.
-#         """
-#         return self.getOrDefault(self.estimatorParamMap)
 
+    def copy(self, extra=None):
+        """
+        Creates a copy of this instance with a randomly generated uid
+        and some extra params. This copies the underlying estimator,
+        creates a deep copy of the embedded paramMap, and
+        copies the embedded and extra parameters over.
 
-
-# Need to generate the perturbed dataset
-# Then add the distances
-# Then add the weights
-# Then train a linear model
-# Then transform and score
+        :param extra: Extra parameters to copy to the new instance
+        :return: Copy of this instance
+        """
+        if extra is None:
+            extra = dict()
+        fittedModels = [m.copy(extra) for m in self.fittedModels]
+        parallelism = self.parallelism
+        return LocalLinearLearnerModel(fittedModels, parallelism)
