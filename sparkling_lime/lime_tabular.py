@@ -1,12 +1,14 @@
 from pyspark.ml import Transformer, Estimator
 from pyspark.ml.param.shared import HasFeaturesCol, \
-    HasLabelCol, HasSeed, HasParallelism, HasPredictionCol
+    HasLabelCol, HasSeed, HasParallelism, HasPredictionCol, HasWeightCol
 from pyspark.ml.param import Param, Params
 from pyspark import keyword_only
 from pyspark.ml.regression import LinearRegression
 from multiprocessing.pool import ThreadPool
 from pyspark.sql import DataFrame
 import threading
+from pyspark.sql.functions import lit, col
+import pyspark.sql.functions as F
 
 
 def _parallelDatasetsFitTasks(wrapper, est, trains, epm):
@@ -215,7 +217,7 @@ class LocalLinearLearnerParams(Params):
         return self.getOrDefault(self.estimatorParamMap)
 
 
-class LocalLinearLearner(HasFeaturesCol, HasLabelCol, HasSeed,
+class LocalLinearLearner(HasFeaturesCol, HasLabelCol, HasSeed, HasWeightCol,
                          Estimator, ReusedEstimator, LocalLinearLearnerParams,
                          HasParallelism):
     """
@@ -283,10 +285,18 @@ class LocalLinearLearner(HasFeaturesCol, HasLabelCol, HasSeed,
 class LocalLinearLearnerModel(HasFeaturesCol, HasLabelCol, HasPredictionCol,
                               HasSeed,
                               Transformer, ParallelTransformer):
+    """
+    NOTE: Currently r2 score ignores weight column. Will be updated with
+    future versions of pyspark.
+    """
     @keyword_only
-    def __init__(self, fittedModels=(), parallelism=1):
+    def __init__(self, fittedModels=(), parallelism=1, scoreCol="r2",
+                 coeffCol="coeff", interceptCol="intercept"):
         super().__init__()
         self.parallelism = parallelism
+        self.scoreCol = scoreCol
+        self.coeffCol = coeffCol
+        self.interceptCol = interceptCol
         self.fittedModels = list(fittedModels)
 
     def _transform(self, datasets):
@@ -304,7 +314,13 @@ class LocalLinearLearnerModel(HasFeaturesCol, HasLabelCol, HasPredictionCol,
         transformed_datasets = [0] * len(datasets)
         tasks = _parallelDatasetsTransformTasks(self, models, datasets)
         for j, transformed_data in pool.imap_unordered(lambda f: f(), tasks):
-            transformed_datasets[j] = transformed_data
+            model = self.fittedModels[j]
+            model_summary = model.summary
+            transformed_datasets[j] = transformed_data\
+                .withColumn(self.scoreCol, lit(model_summary.r2))\
+                .withColumn(self.coeffCol,
+                            F.array(*[lit(c) for c in model.coefficients]))\
+                .withColumn(self.interceptCol, lit(model.intercept))
             datasets[j].unpersist()
         return transformed_datasets
 
@@ -323,3 +339,5 @@ class LocalLinearLearnerModel(HasFeaturesCol, HasLabelCol, HasPredictionCol,
         fittedModels = [m.copy(extra) for m in self.fittedModels]
         parallelism = self.parallelism
         return LocalLinearLearnerModel(fittedModels, parallelism)
+
+from sklearn.metrics import r2_score
