@@ -460,8 +460,9 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         if not colnames:
             colnames = [str(j) for j in range(y)]
         return [F.array(
-                    *[F.rand() for i in range(x)]).alias(j)
-                for j in colnames]
+                    *[(F.randn(seed=seed) * scale[j] + center[j])
+                      for i in range(x)]).alias(colnames[j])
+                for j in range(y)]
 
     def _get_scale_statistics(self, dataset, subset=()):
         """
@@ -596,6 +597,8 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
                         dataset, inverse_col_map[c], c, discretizer)
                 else:
                     binary_cols.append(c)
+            else:
+                binary_cols.append(c)
             dataset.cache()
         if continuous_cols:
             num_feats = len(continuous_cols)
@@ -611,7 +614,7 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
                                            scale=scales, mean=means,
                                            cols=cols, seed=seed,
                                            colnames=inverse_subset)
-            dataset = dataset.select("*", wide_cols)
+            dataset = dataset.select("*", *wide_cols)
 
         generated_cols = list(inverse_col_map.values())
         dataset = dataset.withColumn(
