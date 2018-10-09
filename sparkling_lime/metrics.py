@@ -355,35 +355,59 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         return bins, bin_map
 
     @staticmethod
-    def _make_random_choices_and_binarize(dataset, input_col, num_samples,
-                                          feature_rate_dict,
-                                          output_col="neighborhood",
-                                          seed=None):
+    def zip_explode(*colnames, n):
         """
-        Make an array of structs, size `num_samples`, that are the result of
+        Zips array columns together intro a struct col with elements that can
+        then be selected individually. Array columns must have a fixed, known
+        size and be equal to each other.
+        Given a dataframe df:
+            +---+------------+------------+
+            | id|          c1|          c2|
+            +---+------------+------------+
+            |  1|[a, b, c, d]|[1, 2, 3, 4]|
+            +---+------------+------------+
+        >>> df.withColumn("tmp",
+        >>>               NeighborhoodGenerator.zip_explode("c1", "c2", n=4))\
+        >>>     .select("id", "tmp.c1", "tmp.c2").drop("tmp")\
+        >>>     .show()
+            +---+---+---+
+            | id| c1| c2|
+            +---+---+---+
+            |  1|  a|  1|
+            |  1|  b|  2|
+            |  1|  c|  3|
+            |  1|  d|  4|
+            +---+---+---+
+        """
+        return F.explode(F.array(*[
+            F.struct(*[col(c).getItem(i).alias(c) for c in colnames])
+            for i in range(n)
+        ]))
+
+    @staticmethod
+    def _make_random_choices(dataset, input_col, num_samples, feature_rate_dict,
+                             output_col="neighborhood", seed=None):
+        """
+        Make an array of size `num_samples`, that are the result of
         random sampling from all possible categorical feature values at the
-        rates they are present in the feature data. The struct contains the
-        `inverse` element, which is the sampled value, and the `binary`
-        element, which is a code that reflects whether the value is the same
-        (1.0) or different (0.0) from the original categorical value.
+        rates they are present in the feature data.
         :param dataset: `pyspark.sql.DataFrame` of features in wide format
         :param input_col: Name of the input column to generate samples from
         :param num_samples: Number of samples to generate
         :param feature_rate_dict: Dictionary of feature values to rates the
         value occured in the dataset
         :param seed: Random seed
-        :return: dataset with output_col with an array of num_samples structs
-        of value choice + binary class (is same/diff)
+        :return: dataset with output_col with an array of num_samples
         """
         ordered_rates = [(k, v) for k, v in feature_rate_dict.items()]    # For safe iteration
         bins, bin_map = NeighborhoodGenerator._make_bins(ordered_rates)
         orig_cols = dataset.columns
-        cols = [F.rand(seed=seed).alias("inverse_{}_{}".format(input_col, i))
+        cols = [F.rand().alias("inverse_{}_{}".format(input_col, i))
                 for i in range(num_samples)]
+        dataset = dataset.select(cols + orig_cols)
         colnames = ["inverse_{}_{}".format(input_col, i)
                     for i in range(num_samples)]
         bucketed_colnames = ["bucketed_"+c for c in colnames]
-        dataset = dataset.select("*", *cols)
         bucketizers = [Bucketizer(inputCol=ic, outputCol="bucketed_"+ic,
                                   splits=bins)
                        for ic in colnames]
@@ -391,23 +415,13 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         dataset = pipeline.fit(dataset).transform(dataset)\
             .replace(bin_map, subset=bucketed_colnames)\
             .drop(*colnames)
-        for c in bucketed_colnames:
-            dataset = dataset.withColumn(
-                "binary_"+c,
-                F.when(col(c) == col(input_col), 1).otherwise(
-                    0))
-            dataset = dataset.withColumn(
-                "struct_"+c,
-                F.struct(col(c).alias("inverse"),
-                         col("binary_"+c).alias("binary")))
-        dataset = dataset.withColumn(
-            output_col,
-            F.array([col("struct_"+c) for c in bucketed_colnames]))
+        dataset = dataset.withColumn(output_col,
+                                     F.array(bucketed_colnames))
         dataset = dataset.select(*orig_cols, output_col)
         return dataset
 
     @staticmethod
-    def _make_normals(x, y, scale, mean=(), cols=None, seed=None):
+    def _make_normals(x, y, scale, mean=(), cols=None, seed=None, colnames=None):
         """
         Make `y` columns of an array of `x` samples of a normal distribution,
         scaled with `scale` and centered around a mean or the values in
@@ -428,6 +442,8 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         :param cols: Values of columns to center the normal distribution around
             instead of the mean. Only relevant if a value for `mean` is not
             provided.
+        :param colnames: Names of the columns to return. If none provided,
+        will label columns numerically.
         :return: `pyspark.sql.Column` of centered and scaled normal
             distribution, in `y` columns in "wide" format
             (named numerically from [0,`y`-1])
@@ -436,12 +452,16 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
             center = mean
         else:
             center = cols
+        if colnames:
+            if len(colnames) != y:
+                raise ValueError("Column names must be equal to the number of "
+                                 "columns created. Got {} names, needed {}"
+                                 .format(len(colnames), y))
+        if not colnames:
+            colnames = [str(j) for j in range(y)]
         return [F.array(
-                    [F.struct(
-                        *[(F.rand() * scale[j] + center[j]).alias(n)
-                          for n in ["inverse", "binary"]])
-                        for i in range(x)])
-                for j in range(y)]
+                    *[F.rand() for i in range(x)]).alias(j)
+                for j in colnames]
 
     def _get_scale_statistics(self, dataset, subset=()):
         """
@@ -496,21 +516,19 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         id_col = str(hash("_undiscretize_helper"))
         df = dataset.withColumn(id_col, F.monotonically_increasing_id())
         df.cache()    # Force compute of id
-        df = df.withColumn(subset, F.explode(subset))\
-            .withColumn("inverse", col(subset)["inverse"])
-        means, stds, mins, maxs = ({"inverse": discretizer.means[orig_col]},
-                                   {"inverse": discretizer.stds[orig_col]},
-                                   {"inverse": discretizer.mins[orig_col]},
-                                   {"inverse": discretizer.maxs[orig_col]})
-        df = discretizer.static_undiscretize(df, ["inverse"],
+        df = df.withColumn(subset, F.explode(subset))
+        means, stds, mins, maxs = ({subset: discretizer.means[orig_col]},
+                                   {subset: discretizer.stds[orig_col]},
+                                   {subset: discretizer.mins[orig_col]},
+                                   {subset: discretizer.maxs[orig_col]})
+        df = discretizer.static_undiscretize(df, [subset],
                                              means,
                                              stds,
                                              mins,
                                              maxs,
                                              discretizer.random_state)
         df = df.groupBy(id_col, *other_cols)\
-            .agg(F.collect_list(F.struct(col("inverse"),
-                                         col("inverse").alias("binary")))    # Only kept to avoid KeyError
+            .agg(F.collect_list(subset)    # Only kept to avoid KeyError
                  .alias(subset))\
             .drop(id_col)
         return df
@@ -564,9 +582,10 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
             continuous_cols = [c for c in ic if c not in categorical_cols]
         feature_freqs = self._get_feature_freqs(dataset,
                                                 subset=categorical_cols)
+        binary_cols = []
         for c in categorical_cols:
             # Randomly sample according to categorical value frequency
-            dataset = self._make_random_choices_and_binarize(
+            dataset = self._make_random_choices(
                     dataset, c,  num_samples, feature_freqs[c],
                     inverse_col_map[c])
             dataset.cache()
@@ -575,6 +594,8 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
                 if c in discretizer.to_discretize:
                     dataset = self._undiscretize_helper(
                         dataset, inverse_col_map[c], c, discretizer)
+                else:
+                    binary_cols.append(c)
             dataset.cache()
         if continuous_cols:
             num_feats = len(continuous_cols)
@@ -588,9 +609,21 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
                 cols = None
             wide_cols = self._make_normals(num_samples, num_feats,
                                            scale=scales, mean=means,
-                                           cols=cols, seed=seed)
-            wide_cols_named = [c.alias(n)
-                               for c, n in zip(wide_cols, inverse_subset)]
-            dataset = dataset.select("*", *wide_cols_named)
+                                           cols=cols, seed=seed,
+                                           colnames=inverse_subset)
+            dataset = dataset.select("*", wide_cols)
+
+        generated_cols = list(inverse_col_map.values())
+        dataset = dataset.withColumn(
+            "tmp",
+            NeighborhoodGenerator.zip_explode(*generated_cols, n=num_samples))\
+            .drop(*generated_cols)\
+            .select("*", *["tmp.{}".format(c) for c in generated_cols])\
+            .drop("tmp")
+        # Generate a binary col if necessary
+        for c in binary_cols:
+            dataset = dataset.withColumn(
+                "binary_"+c,
+                F.when(col(c) == col(inverse_col_map[c]), 1.0).otherwise(0.0))
 
         return dataset
