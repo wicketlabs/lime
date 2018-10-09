@@ -31,7 +31,6 @@ class BaseDiscretizer(BaseSparkMethods):
         :param feature_names: list of names (strings) corresponding to the
         columns in the training data.
         """
-        # Need this to be a list of feature names instead
         super().__init__()
         self.to_discretize = ([x for x in feature_names
                               if x not in categorical_feature_names])
@@ -179,6 +178,9 @@ class BaseDiscretizer(BaseSparkMethods):
 
 
 class QuartileDiscretizer(BaseDiscretizer):
+    """
+    Bins continuous data into quartiles.
+    """
     def __init__(self, data, categorical_features, feature_names, labels=None,
                  random_state=None):
         BaseDiscretizer.__init__(self, data, categorical_features,
@@ -192,6 +194,9 @@ class QuartileDiscretizer(BaseDiscretizer):
 
 
 class DecileDiscretizer(BaseDiscretizer):
+    """
+    Bins continuous data into deciles.
+    """
     def __init__(self, data, categorical_features, feature_names, labels=None,
                  random_state=None):
         BaseDiscretizer.__init__(self, data, categorical_features,

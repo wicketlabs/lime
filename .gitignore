@@ -70,3 +70,8 @@ fabric.properties
 
 # Pycharm
 .idea
+
+# Pyspark
+spark-warehouse
+derby.log
+metastore_db
