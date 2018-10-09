@@ -24,16 +24,16 @@ class PairwiseDistanceTests(SparkSessionTestCase):
         with self.subTest("Test default parameters exist"):
             d0 = metrics.PairwiseDistance()
             self.assertCountEqual(
-                d0.params, [d0.inputCol, d0.outputCol, d0.metric, d0.rowVector])
+                d0.params, [d0.inputCol, d0.outputCol, d0.distanceMetric, d0.rowVector])
             self.assertTrue(all([~d0.isSet(p) for p in d0.params]))
-            self.assertTrue(d0.hasDefault(d0.metric))
-            self.assertEqual(d0.getMetric(), "euclidean")
+            self.assertTrue(d0.hasDefault(d0.distanceMetric))
+            self.assertEqual(d0.getDistanceMetric(), "euclidean")
 
         with self.subTest("Test parameters are set"):
             d0.setParams(inputCol="input", outputCol="output", rowVector=vec,
-                         metric="euclidean")
+                         distanceMetric="euclidean")
             self.assertTrue(all([d0.isSet(p) for p in d0.params]))
-            self.assertEqual(d0.getMetric(), "euclidean")
+            self.assertEqual(d0.getDistanceMetric(), "euclidean")
             self.assertEqual(d0.getRowVector(), vec)
             self.assertEqual(d0.getInputCol(), "input")
             self.assertEqual(d0.getOutputCol(), "output")
@@ -48,9 +48,9 @@ class PairwiseDistanceTests(SparkSessionTestCase):
                           "distinct"):
             d1 = metrics.PairwiseDistance(
                 rowVector=vec, inputCol="features", outputCol="output",
-                metric="euclidean")
+                distanceMetric="euclidean")
             self.assertNotEqual(d1.uid, d0.uid)
-            self.assertEqual(d1.getMetric(), "euclidean")
+            self.assertEqual(d1.getDistanceMetric(), "euclidean")
             self.assertEqual(d1.getRowVector(), vec)
             self.assertEqual(d1.getInputCol(), "features")
             self.assertEqual(d1.getOutputCol(), "output")
