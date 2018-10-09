@@ -40,6 +40,7 @@ class BaseDiscretizer(BaseSparkMethods):
         self.stds = {}
         self.mins = {}
         self.maxs = {}
+        self.feature_names = feature_names
         self.random_state = check_random_state(random_state)
         self.categorical_features_names = categorical_feature_names
 
@@ -131,12 +132,13 @@ class BaseDiscretizer(BaseSparkMethods):
         :param data: pyspark.sql.DataFrame
         :return: a pyspark.sql.DataFrame with same dimension, but discretized
         """
+        other_cols = [c for c in data.columns if c not in self.feature_names]
         pipe = Pipeline(stages=list(self.bucketizers.values()))
         discretized = pipe.fit(data).transform(data)
         disc_select = [col(c).alias(c.lstrip("disc_"))
                        for c in discretized.columns if c.startswith("disc_")]
         discretized = discretized.select(
-            *(disc_select + self.categorical_features_names))
+            *(disc_select + self.categorical_features_names + other_cols))
         return discretized
 
     def undiscretize(self, data):
