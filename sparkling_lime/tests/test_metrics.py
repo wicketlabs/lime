@@ -1,7 +1,7 @@
 from sparkling_lime import metrics
 from sparkling_lime.discretize import QuartileDiscretizer
 from pyspark.ml.linalg import Vectors
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, struct
 import numpy as np
 import pandas as pd
 import random
@@ -68,7 +68,7 @@ class PairwiseDistanceTests(SparkSessionTestCase):
         df = self.spark.createDataFrame(data, ["id", "other", "orig"])
         df = df.withColumn("features", struct("orig", "other"))
         d1 = metrics.PairwiseDistance(inputCol="features", outputCol="output",
-                                      metric="euclidean")
+                                      distanceMetric="euclidean")
         actual = d1.transform(df).select("id", "output").collect()
         expected = {0: 0.0, 1: 2.0, 2: 2.0, 3: 2.8284271247461903}
         for r in actual:
