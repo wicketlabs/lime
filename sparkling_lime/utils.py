@@ -1,21 +1,6 @@
 import threading
 from pyspark.ml.param import Params
 
-
-
-def makeMixinClass(cls, mixin):
-    """
-    Return a new class that inherits from the given class object and a
-    mixin.
-    """
-
-    class NewClass(cls, mixin):
-        pass
-
-    NewClass.__name__ = "{}_{}".format(cls.__name__, mixin.__name__)
-    return NewClass
-
-
 def _parallelDatasetsFitTasks(wrapper, est, trains, epm):
     """
     Creates a list of callables which can be called from different threads to fit
@@ -124,12 +109,12 @@ class _TransformMultipleDatasetsIterator(object):
 
     See ParallelTransformer.transformMultipleDatasets for more info.
     """
-    def __init__(self, transformSingleModel, numModels):
+    def __init__(self, transformSingleModel, numIterations):
         """
 
         """
         self.transformSingleModel = transformSingleModel
-        self.numModel = numModels
+        self.numIterations = numIterations
         self.counter = 0
         self.lock = threading.Lock()
 
@@ -139,8 +124,8 @@ class _TransformMultipleDatasetsIterator(object):
     def __next__(self):
         with self.lock:
             index = self.counter
-            if index >= self.numModel:
-                raise StopIteration("No models remaining.")
+            if index >= self.numIterations:
+                raise StopIteration("No transforms remaining.")
             self.counter += 1
         return index, self.transformSingleModel(index)
 

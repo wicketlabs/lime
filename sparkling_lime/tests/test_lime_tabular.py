@@ -3,6 +3,11 @@ from sparkling_lime.lime_tabular import ReusedEstimator, LocalLinearLearner
 from pyspark.ml.regression import LinearRegression
 from pyspark.ml.linalg import Vectors
 from pyspark.sql.functions import col
+import numpy as np
+import pandas as pd
+from pyspark.ml.feature import VectorAssembler
+from sparkling_lime.metrics import NeighborhoodGenerator
+from pyspark.ml.classification import LogisticRegression
 
 
 class TestReusedEstimator(SparkSessionTestCase):
@@ -96,4 +101,51 @@ class TestParallelTransformer(SparkSessionTestCase):
 class MockReusedLinReg(LinearRegression, ReusedEstimator):
     def __init__(self):
         super().__init__()
+
+
+class TestExplainer(SparkSessionTestCase):
+
+    def _make_data(self, n_rows=50, arr=False):
+        """
+        Helper function for generating pyspark dataframes for tests.
+        """
+        np.random.seed(42)
+        y = np.random.binomial(1, 0.5, n_rows)
+        X = np.zeros((n_rows, 4))
+        z = y - np.random.binomial(1, 0.1, n_rows) \
+            + np.random.binomial(1,  0.1, n_rows)
+        z[z == -1] = 0
+        z[z == 2] = 1
+        # 5 relevant features
+        X[:, 0] = z
+        X[:, 1] = y * np.abs(
+            np.random.normal(4, 1.2, n_rows)) + np.random.normal(4, 0.1, n_rows)
+        X[:, 2] = y + np.random.normal(7.2, 2.8, n_rows)
+        X[:, 3] = y ** 2 + np.random.normal(3.9, 1.4, n_rows)
+
+        if arr:
+            return X
+        else:
+            # Combine data into pyspark dataFrame
+            data = pd.DataFrame(X, columns=["f0", "f1", "f2", "f3"])
+            df = self.spark.createDataFrame(data)
+            return df
+
+    def test_explainer(self):
+        df = self._make_data()
+        df = df.withColumn("label", col("f0"))
+        assembler = VectorAssembler(inputCols=["f0", "f1", "f2", "f3"],
+                                    outputCol="features")
+        df = assembler.transform(df)
+        lrm = LogisticRegression().fit(df)
+        df = lrm.transform(df)
+        ngen = NeighborhoodGenerator(inputCols=["f0", "f1", "f2", "f3"],
+                                     inverseOutputCols=["n_f0", "n_f1", "n_f2", "n_f3"],
+                                     neighborhoodSize=100,
+                                     sampleAroundInstance=False,
+                                     categoricalCols=["f0"])
+
+
+
+
 
