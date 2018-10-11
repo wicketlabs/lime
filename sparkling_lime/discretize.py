@@ -40,6 +40,7 @@ class BaseDiscretizer(BaseSparkMethods):
         self.stds = {}
         self.mins = {}
         self.maxs = {}
+        self.feature_names = feature_names
         self.random_state = check_random_state(random_state)
         self.categorical_features_names = categorical_feature_names
 
@@ -131,24 +132,30 @@ class BaseDiscretizer(BaseSparkMethods):
         :param data: pyspark.sql.DataFrame
         :return: a pyspark.sql.DataFrame with same dimension, but discretized
         """
+        other_cols = [c for c in data.columns if c not in self.feature_names]
         pipe = Pipeline(stages=list(self.bucketizers.values()))
         discretized = pipe.fit(data).transform(data)
         disc_select = [col(c).alias(c.lstrip("disc_"))
                        for c in discretized.columns if c.startswith("disc_")]
         discretized = discretized.select(
-            *(disc_select + self.categorical_features_names))
+            *(disc_select + self.categorical_features_names + other_cols))
         return discretized
 
     def undiscretize(self, data):
-        for feature in self.to_discretize:
+        return self.static_undiscretize(data, self.to_discretize,
+                                         self.means, self.stds, self.mins,
+                                         self.maxs, self.random_state)
+    @staticmethod
+    def static_undiscretize(data, subset, means, stds, mins, maxs, random_state):
+        for feature in subset:
             means_replacement = dict([(idx, val) for idx, val
-                                      in enumerate(self.means[feature])])
+                                      in enumerate(means[feature])])
             std_replacement = dict([(idx, val) for idx, val
-                                    in enumerate(self.stds[feature])])
+                                    in enumerate(stds[feature])])
             max_replacement = dict([(idx, val) for idx, val
-                                    in enumerate(self.maxs[feature])])
+                                    in enumerate(maxs[feature])])
             min_replacement = dict([(idx, val) for idx, val
-                                    in enumerate(self.mins[feature])])
+                                    in enumerate(mins[feature])])
             # Add dummy columns to reference the means, etc. for feature buckets
             data = data.withColumn("mean_"+feature, col(feature))\
                 .withColumn("std_"+feature, col(feature))\
@@ -161,7 +168,7 @@ class BaseDiscretizer(BaseSparkMethods):
             data = data.replace(min_replacement, subset="min_"+feature)
             data = data.withColumn(
                     "rand_"+feature,
-                    randn(seed=self.random_state.randint(-100, 100)))\
+                    randn(seed=random_state.randint(-100, 100)))\
                 .withColumn(
                     feature,
                     col("rand_"+feature)*col("std_"+feature)+col("mean_"+feature))
