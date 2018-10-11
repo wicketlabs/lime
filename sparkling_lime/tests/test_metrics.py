@@ -1,7 +1,7 @@
 from sparkling_lime import metrics
 from sparkling_lime.discretize import QuartileDiscretizer
 from pyspark.ml.linalg import Vectors
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, struct
 import numpy as np
 import pandas as pd
 import random
@@ -10,7 +10,7 @@ from pyspark.ml.tests import SparkSessionTestCase
 
 class PairwiseDistanceTests(SparkSessionTestCase):
 
-    def test_pairwise_distance(self):
+    def test_pairwise_distance_vector(self):
         data = [(0, Vectors.dense([-1.0, -1.0]),),
                 (1, Vectors.dense([-1.0, 1.0]),),
                 (2, Vectors.dense([1.0, -1.0]),),
@@ -60,9 +60,24 @@ class PairwiseDistanceTests(SparkSessionTestCase):
                     "Distances are calculated correctly: i={}".format(r["id"])):
                 self.assertAlmostEqual(r["output"], expected[r["id"]])
 
+    def test_pairwise_distance_columns(self):
+        data = [(0, Vectors.dense([-1.0, -1.0]), Vectors.dense([-1.0, -1.0]),),
+                (1, Vectors.dense([-1.0, 1.0]), Vectors.dense([-1.0, -1.0]),),
+                (2, Vectors.dense([1.0, -1.0]), Vectors.dense([-1.0, -1.0]),),
+                (3, Vectors.dense([1.0, 1.0]), Vectors.dense([-1.0, -1.0]),)]
+        df = self.spark.createDataFrame(data, ["id", "other", "orig"])
+        df = df.withColumn("features", struct("orig", "other"))
+        d1 = metrics.PairwiseDistance(inputCol="features", outputCol="output",
+                                      distanceMetric="euclidean")
+        actual = d1.transform(df).select("id", "output").collect()
+        expected = {0: 0.0, 1: 2.0, 2: 2.0, 3: 2.8284271247461903}
+        for r in actual:
+            with self.subTest(
+                    "Distances are calculated correctly: i={}".format(r["id"])):
+                self.assertAlmostEqual(r["output"], expected[r["id"]])
+
 
 class KernelWidthTests(SparkSessionTestCase):
-
     def test_kernel_weight(self):
         data = [[0, 0.0], [1, 2.0], [2, 2.0], [3, 2.8284271247461903]]
         df = self.spark.createDataFrame(data, ["id", "distances"])
