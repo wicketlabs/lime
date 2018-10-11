@@ -23,7 +23,10 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
 
     rowVector = Param(Params._dummy(), "rowVector",
                       "The denseVector of features by which the values of the"
-                      " dataset are compared to calculate pairwise distances.",
+                      " dataset are compared to calculate pairwise distances."
+                      " If not provided, will check if inputCol is a struct of"
+                      " two vectors, (first, second), and if so will calculate"
+                      " the distance from second to first.",
                       typeConverter=TypeConverters.toVector)
 
     metric = Param(Params._dummy(), "metric",
@@ -37,7 +40,7 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
     def __init__(self, rowVector=None, inputCol=None, outputCol=None,
                  metric="euclidean"):
         super(PairwiseDistance, self).__init__()
-        self._setDefault(metric="euclidean")
+        self._setDefault(metric="euclidean", rowVector=None)
         kwargs = self._input_kwargs
         self.setParams(**kwargs)
 
@@ -78,9 +81,27 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
         """
         Validates the input type. Throw an exception if it is invalid.
         """
-        if inputType != VectorUDT():
-            raise TypeError("Bad input type: {}. ".format(inputType) +
-                            "Requires Double.")
+        if not self.getOrDefault(self.rowVector):
+            try:
+                numFields = len(inputType.fields)
+                if numFields != 2:
+                    raise TypeError("Bad input fields. If no rowVector is given"
+                                    ", must have two fields. Got {}."
+                                    .format(numFields))
+                for field in range(numFields):
+                    if inputType[field].dataType != VectorUDT():
+                        if inputType[field] != VectorUDT():
+                            raise TypeError(
+                                "Bad input type: {}. Requires Vector."
+                                .format(inputType[field]))
+            except AttributeError:
+                raise TypeError("Bad input type: {}. "
+                                "Requires struct of vectors."
+                                .format(inputType))
+        else:
+            if inputType != VectorUDT():
+                raise TypeError("Bad input type: {}. ".format(inputType) +
+                                "Requires Vector.")
 
     def outputDataType(self):
         """
@@ -97,7 +118,10 @@ class PairwiseDistance(UnaryTransformer, DefaultParamsReadable,
         rowVector = self.getRowVector()
         metric = self.getMetric()
         distance_fn = self._distance_fns[metric]
-        return lambda x: distance_fn(x, rowVector)
+        if rowVector:
+            return lambda x: distance_fn(x, rowVector)
+        else:
+            return lambda x: distance_fn(x[1], x[0])
 
 
 class KernelWeight(HasInputCol, HasOutputCol, Transformer,

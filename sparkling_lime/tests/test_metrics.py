@@ -2,7 +2,7 @@ from sparkling_lime import metrics
 from pyspark.ml.linalg import Vectors
 from unittest import TestCase
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, struct
 
 
 class TestMetrics(TestCase):
@@ -18,7 +18,7 @@ class TestMetrics(TestCase):
     def test_kernel(self):
         pass
 
-    def test_pairwise_distance(self):
+    def test_pairwise_distance_vector(self):
         data = [(0, Vectors.dense([-1.0, -1.0]),),
                 (1, Vectors.dense([-1.0, 1.0]),),
                 (2, Vectors.dense([1.0, -1.0]),),
@@ -61,6 +61,22 @@ class TestMetrics(TestCase):
             self.assertEqual(d1.getInputCol(), "features")
             self.assertEqual(d1.getOutputCol(), "output")
 
+        actual = d1.transform(df).select("id", "output").collect()
+        expected = {0: 0.0, 1: 2.0, 2: 2.0, 3: 2.8284271247461903}
+        for r in actual:
+            with self.subTest(
+                    "Distances are calculated correctly: i={}".format(r["id"])):
+                self.assertAlmostEqual(r["output"], expected[r["id"]])
+
+    def test_pairwise_distance_columns(self):
+        data = [(0, Vectors.dense([-1.0, -1.0]), Vectors.dense([-1.0, -1.0]),),
+                (1, Vectors.dense([-1.0, 1.0]), Vectors.dense([-1.0, -1.0]),),
+                (2, Vectors.dense([1.0, -1.0]), Vectors.dense([-1.0, -1.0]),),
+                (3, Vectors.dense([1.0, 1.0]), Vectors.dense([-1.0, -1.0]),)]
+        df = self.spark.createDataFrame(data, ["id", "other", "orig"])
+        df = df.withColumn("features", struct("orig", "other"))
+        d1 = metrics.PairwiseDistance(inputCol="features", outputCol="output",
+                                      metric="euclidean")
         actual = d1.transform(df).select("id", "output").collect()
         expected = {0: 0.0, 1: 2.0, 2: 2.0, 3: 2.8284271247461903}
         for r in actual:
