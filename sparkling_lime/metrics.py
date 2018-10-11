@@ -319,19 +319,20 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
     """
 
     @keyword_only
-    def __init__(self, inputCols=None, outputCol=None, neighborhoodSize=5000,
+    def __init__(self, inputCols=None, inverseOutputCols=None, neighborhoodSize=5000,
                  discretizer=None, seed=None, sampleAroundInstance=False,
                  categoricalCols=None):
         super(NeighborhoodGenerator, self).__init__()
-        self._setDefault(inputCols=None, neighborhoodSize=5000, discretizer=None,
+        self._setDefault(inputCols=None, inverseOutputCols=None,
+                         neighborhoodSize=5000, discretizer=None,
                          sampleAroundInstance=False, categoricalCols=None)
         kwargs = self._input_kwargs
         self.setParams(**kwargs)
 
     @keyword_only
-    def setParams(self, inputCols=None, outputCol=None, neighborhoodSize=5000,
-                  discretizer=None, sampleAroundInstance=False, seed=None,
-                  categoricalCols=None):
+    def setParams(self, inputCols=None, inverseOutputCols=None,
+                  neighborhoodSize=5000, discretizer=None,
+                  sampleAroundInstance=False, seed=None, categoricalCols=None):
         """
         Sets params for this PairwiseEuclideanDistance transformer.
         """
@@ -544,6 +545,7 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         distribution, and making a binary feature that is 1 when the value
         is the same as the instance being explained.
 
+<<<<<<< HEAD
         The neighborhood is an array of structs with the following schema:
 
         Output schema:
@@ -558,6 +560,8 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         For continuous variables, the 'binary' element is the same as the
         'inverse' element (since it is only relevant for categoical variables).
 
+=======
+>>>>>>> master
         :param dataset: `pyspark.sql.DataFrame` of features in wide format
         (one feature per column)
         :return: Dataset with original + perturbed features in wide format

@@ -1,8 +1,6 @@
 from sparkling_lime import metrics
 from sparkling_lime.discretize import QuartileDiscretizer
 from pyspark.ml.linalg import Vectors
-from unittest import TestCase
-from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, struct
 import numpy as np
 import pandas as pd
