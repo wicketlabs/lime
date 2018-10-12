@@ -545,23 +545,6 @@ class NeighborhoodGenerator(Transformer, HasInputCols,
         distribution, and making a binary feature that is 1 when the value
         is the same as the instance being explained.
 
-<<<<<<< HEAD
-        The neighborhood is an array of structs with the following schema:
-
-        Output schema:
-            original dataset + for each feature column:
-
-        root
-         |-- <outputCol>: array (nullable = true)
-         |    |-- element: struct (containsNull = false)
-         |    |    |-- inverse: double (nullable = false)
-         |    |    |-- binary: double (nullable = false)
-
-        For continuous variables, the 'binary' element is the same as the
-        'inverse' element (since it is only relevant for categoical variables).
-
-=======
->>>>>>> master
         :param dataset: `pyspark.sql.DataFrame` of features in wide format
         (one feature per column)
         :return: Dataset with original + perturbed features in wide format
