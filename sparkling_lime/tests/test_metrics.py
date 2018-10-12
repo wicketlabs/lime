@@ -78,6 +78,7 @@ class PairwiseDistanceTests(SparkSessionTestCase):
 
 
 class KernelWidthTests(SparkSessionTestCase):
+
     def test_kernel_weight(self):
         data = [[0, 0.0], [1, 2.0], [2, 2.0], [3, 2.8284271247461903]]
         df = self.spark.createDataFrame(data, ["id", "distances"])
